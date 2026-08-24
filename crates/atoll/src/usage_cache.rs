@@ -251,8 +251,23 @@ pub fn window_label(window_minutes: Option<u64>) -> String {
 
 // -------------------------------------------------------- the network fetch
 
+/// How soon a failed ask of the endpoint is tried again.
+///
+/// A failure keeps the old numbers on screen, and the old numbers must not be
+/// dressed up as a fresh reading for a whole TTL — that is how one transient
+/// refusal used to hold the readout a minute behind, and a run of them held it
+/// behind indefinitely. Short enough to recover quickly, long enough that a
+/// rate-limiting endpoint is not hammered.
+const FAILURE_RETRY_SECS: u64 = 15;
+
+/// How fresh the reading has to be before fetching again on the user's click
+/// is pointless rather than polite.
+pub const CLICK_FRESH_SECS: u64 = 15;
+
 /// Claude's rate-limit windows, from the endpoint if it answers and from
-/// whatever is on disk if it does not.
+/// whatever is on disk if it does not. The endpoint is asked whenever the
+/// reading on disk is at least `min_age_secs` old — the TTL for the routine
+/// cadence, something smaller for the moments somebody is actually looking.
 ///
 /// **Blocking, and not for the UI thread.** The caller runs this on a worker and
 /// takes the result through a channel.
@@ -261,24 +276,26 @@ pub fn window_label(window_minutes: Option<u64>) -> String {
 /// stale, else the cache the user's own status line script keeps. Numbers a
 /// minute old beat no numbers, and numbers an hour old beat a blank panel — the
 /// panel says when each window resets, so a stale reading looks stale.
-pub fn fetch_claude_limits(now: u64) -> ClaudeLimits {
+pub fn fetch_claude_limits(now: u64, min_age_secs: u64) -> ClaudeLimits {
     let own_cache = usage::claude_usage_cache_path().ok();
     let cached = own_cache
         .as_deref()
         .and_then(|path| usage::read_claude_usage_cache(path).ok().flatten())
         .unwrap_or_default();
 
-    if !cached.is_stale(now, usage::CLAUDE_USAGE_TTL_SECS) {
+    if !cached.is_stale(now, min_age_secs) {
         return cached;
     }
     if let Some(fresh) = ask_the_endpoint(now, own_cache.as_deref()) {
         return fresh;
     }
 
-    // Whatever we fall back to is stamped with *now*, failure included. Without
-    // that, a reading with no timestamp reads as stale on the very next tick and
-    // the fetch runs again half a second later — which is how a fallback becomes
-    // a request loop against an endpoint that is already rate-limiting us.
+    // The fallback needs a stamp: a reading with no timestamp reads as stale on
+    // the very next tick, and the fetch runs again half a second later — which
+    // is how a fallback becomes a request loop against an endpoint that is
+    // already rate-limiting us. But it must not be stamped *now* either, or the
+    // failure parades as a fresh reading for a whole TTL. It is stamped just
+    // old enough that the next attempt comes in [`FAILURE_RETRY_SECS`].
     let mut fallback = if cached.is_empty() {
         usage::foreign_usage_cache_path()
             .ok()
@@ -287,8 +304,14 @@ pub fn fetch_claude_limits(now: u64) -> ClaudeLimits {
     } else {
         cached
     };
-    fallback.fetched_at = Some(now);
+    fallback.fetched_at = Some(failure_stamp(now));
     fallback
+}
+
+/// The `fetched_at` a failed fetch's fallback carries: stale again in
+/// [`FAILURE_RETRY_SECS`] rather than in a full TTL.
+fn failure_stamp(now: u64) -> u64 {
+    (now + FAILURE_RETRY_SECS).saturating_sub(usage::CLAUDE_USAGE_TTL_SECS)
 }
 
 /// One authenticated GET. `None` for any failure at all — no token, no network,
@@ -382,6 +405,24 @@ mod tests {
             plan_type: Some("prolite".into()),
             source: None,
         }
+    }
+
+    /// A failed fetch's fallback goes stale again in [`FAILURE_RETRY_SECS`],
+    /// not in a full TTL — that is the whole difference between one bad
+    /// request costing seconds and costing a minute of stale numbers.
+    #[test]
+    fn a_failure_is_retried_sooner_than_a_success() {
+        use atoll_core::usage::CLAUDE_USAGE_TTL_SECS;
+
+        let failed = ClaudeLimits {
+            limits: claude().limits,
+            fetched_at: Some(failure_stamp(NOW)),
+        };
+        assert!(!failed.is_stale(NOW + FAILURE_RETRY_SECS - 1, CLAUDE_USAGE_TTL_SECS));
+        assert!(failed.is_stale(NOW + FAILURE_RETRY_SECS, CLAUDE_USAGE_TTL_SECS));
+
+        // And a clock early enough to underflow still answers.
+        assert_eq!(failure_stamp(0), 0);
     }
 
     #[test]

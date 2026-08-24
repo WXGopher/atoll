@@ -172,9 +172,10 @@ pub const CLAUDE_USAGE_BETA: &str = "oauth-2025-04-20";
 /// How long a reading from the endpoint is reused before asking again.
 ///
 /// The endpoint rate-limits, and it is shared with whatever else the user runs
-/// against it — their own status line script, most likely — so Atoll asks
-/// rarely and falls back rather than retrying.
-pub const CLAUDE_USAGE_TTL_SECS: u64 = 60;
+/// against it — their own status line script, most likely — so Atoll does not
+/// ask more often than this. How soon a *failed* ask is retried is the
+/// caller's business: see `usage_cache::fetch_claude_limits` in the app.
+pub const CLAUDE_USAGE_TTL_SECS: u64 = 30;
 
 const CACHE_LIMITS_KEY: &str = "limits";
 const CACHE_FETCHED_AT_KEY: &str = "fetchedAt";

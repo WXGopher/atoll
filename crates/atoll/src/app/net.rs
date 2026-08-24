@@ -2,7 +2,8 @@
 //!
 //! # Why WinHTTP
 //!
-//! Atoll needs exactly one request: Claude Code's usage endpoint, once a minute.
+//! Atoll needs exactly one request: Claude Code's usage endpoint, a couple of
+//! times a minute.
 //! A Rust HTTP client would bring a TLS stack and a root-certificate bundle with
 //! it — megabytes, for one GET, in a binary that sits in the notification area
 //! all day. WinHTTP is already on the machine, already trusts the certificate
@@ -212,7 +213,10 @@ mod tests {
             .and_then(|path| usage::read_claude_oauth_token(&path));
         println!("token readable: {}", token.is_some());
 
-        let limits = crate::usage_cache::fetch_claude_limits(atoll_core::now_unix_secs());
+        let limits = crate::usage_cache::fetch_claude_limits(
+            atoll_core::now_unix_secs(),
+            atoll_core::usage::CLAUDE_USAGE_TTL_SECS,
+        );
         println!(
             "chain result: {} limits, stamped: {}",
             limits.limits.len(),

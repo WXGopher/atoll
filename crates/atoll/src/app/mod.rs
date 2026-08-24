@@ -855,21 +855,33 @@ impl App {
             .borrow()
             .claude
             .is_stale(now, atoll_core::usage::CLAUDE_USAGE_TTL_SECS);
-        if stale && !self.fetching.get() {
-            self.fetching.set(true);
-            let tx = self.limits_tx.clone();
-            // A detached worker: the result is wanted, but nothing waits for it,
-            // and a request that never returns costs one thread and no more.
-            let spawned = std::thread::Builder::new()
-                .name("atoll-usage".to_string())
-                .spawn(move || {
-                    let _ = tx.send(crate::usage_cache::fetch_claude_limits(now_unix_secs()));
-                });
-            if spawned.is_err() {
-                self.fetching.set(false);
-            }
+        if stale {
+            self.spawn_claude_fetch(atoll_core::usage::CLAUDE_USAGE_TTL_SECS);
         }
         arrived
+    }
+
+    /// Fetch Claude's limits on a worker, wanting a reading no older than
+    /// `min_age_secs`, unless a fetch is already in flight.
+    fn spawn_claude_fetch(&self, min_age_secs: u64) {
+        if self.fetching.get() {
+            return;
+        }
+        self.fetching.set(true);
+        let tx = self.limits_tx.clone();
+        // A detached worker: the result is wanted, but nothing waits for it,
+        // and a request that never returns costs one thread and no more.
+        let spawned = std::thread::Builder::new()
+            .name("atoll-usage".to_string())
+            .spawn(move || {
+                let _ = tx.send(crate::usage_cache::fetch_claude_limits(
+                    now_unix_secs(),
+                    min_age_secs,
+                ));
+            });
+        if spawned.is_err() {
+            self.fetching.set(false);
+        }
     }
 
     fn refresh_tray_icon(&self) {
@@ -998,6 +1010,10 @@ impl App {
                 self.flyout.window().request_redraw();
                 self.flyout_open.set(true);
                 self.start_title_scan();
+                // Somebody is about to read the numbers: get fresher ones than
+                // the routine cadence keeps, and the open panel repaints when
+                // they arrive.
+                self.spawn_claude_fetch(crate::usage_cache::CLICK_FRESH_SECS);
             }
             Err(error) => {
                 crate::util::debug_log(&format!("flyout show failed: {error}"));
