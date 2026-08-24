@@ -1,0 +1,10 @@
+// The entry point `build.rs` compiles. Everything re-exported here becomes a
+// Rust type under `slint::include_modules!()`.
+
+import { SessionRow, UsageRow, UsageChip } from "common.slint";
+import { CardWindow } from "card.slint";
+import { FlyoutWindow } from "flyout.slint";
+import { TaskbarBar } from "taskbar.slint";
+import { SettingsWindow } from "settings.slint";
+
+export { SessionRow, UsageRow, UsageChip, CardWindow, FlyoutWindow, TaskbarBar, SettingsWindow }

@@ -1,0 +1,172 @@
+import { Theme, ActionButton } from "common.slint";
+
+// The card: the one window Atoll opens on its own initiative.
+//
+// It exists only while a session needs something — a tool approval, an answer
+// to a question, or a word that a turn finished — and it is gone the rest of
+// the time. There is no resting window any more: the numbers live in the
+// taskbar readout, and this appears beside it when a human is actually being
+// asked.
+//
+// Rust owns the window's size and position — it is the side that knows where
+// the taskbar is and which way there is room to open — and this owns everything
+// inside those bounds.
+export component CardWindow inherits Window {
+    // Matched verbatim by the Win32 code that hides this window from the
+    // taskbar; winit's invisible helper windows share our process id, so the
+    // title is the only reliable way to find the real one.
+    title: "Atoll Card";
+    no-frame: true;
+    always-on-top: true;
+    background: transparent;
+
+    // 0 none · 1 approval · 2 question · 3 completed
+    in property <int> card: 0;
+    in property <string> card-source: "claude";
+    in property <string> card-title;
+    in property <string> card-tool;
+    in property <string> card-detail;
+    in property <[string]> card-options;
+    // How many more cards are queued behind this one, so the user can tell that
+    // dismissing this one is not the end of it.
+    in property <int> card-queued: 0;
+
+    // true = allow, false = deny.
+    callback decide(bool);
+    // The index of the chosen option on a question card.
+    callback answer(int);
+    // The pointer entered or left the card, which is what starts and stops the
+    // grace period before an untouched card collapses.
+    callback hover(bool);
+    // Dragged by its heading, in logical pixels since the press.
+    callback drag-delta(length, length);
+    callback drag-done();
+
+    property <bool> pulse: false;
+    property <color> card-accent: root.card-source == "codex" ? Theme.codex : Theme.claude;
+
+    Timer {
+        interval: 700ms;
+        running: true;
+        triggered => {
+            root.pulse = !root.pulse;
+        }
+    }
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: 16px;
+        background: Theme.card-bg;
+        border-width: 1px;
+        border-color: Theme.hairline;
+
+        // Declared before the buttons, so the buttons keep the clicks. Reports
+        // hovering, and carries the drag: anywhere that is not a button is a
+        // handle, which for a window this small is the whole of it.
+        watch := TouchArea {
+            width: 100%;
+            height: 100%;
+            mouse-cursor: move;
+            changed has-hover => {
+                root.hover(self.has-hover);
+            }
+            moved => {
+                root.drag-delta(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
+            }
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.up) {
+                    root.drag-done();
+                }
+            }
+        }
+
+        VerticalLayout {
+            padding: 14px;
+            spacing: 8px;
+
+            // --- heading: which session, and what kind of card this is
+            HorizontalLayout {
+                spacing: 8px;
+                height: 16px;
+                Rectangle {
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 4px;
+                    y: 4px;
+                    background: root.card-accent;
+                    opacity: root.card == 3 ? 0.45 : (root.pulse ? 1.0 : 0.4);
+                    animate opacity { duration: 700ms; easing: ease-in-out; }
+                }
+                Text {
+                    text: root.card-title;
+                    color: Theme.text;
+                    font-size: 12px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                Text {
+                    text: root.card-tool;
+                    color: Theme.faint;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    horizontal-alignment: right;
+                    overflow: elide;
+                }
+            }
+
+            // --- body: the one line that says what is actually being asked
+            Text {
+                text: root.card-detail;
+                color: root.card == 2 ? Theme.text : Theme.body-text;
+                font-size: 13px;
+                wrap: root.card == 2 ? word-wrap : no-wrap;
+                overflow: elide;
+                vertical-alignment: top;
+            }
+
+            // --- actions
+            if root.card == 1: HorizontalLayout {
+                spacing: 8px;
+                height: 30px;
+                Rectangle {
+                    // Pushes the buttons to the right, and carries the "N more
+                    // waiting" note in the space it would otherwise waste.
+                    Text {
+                        x: 0px;
+                        text: root.card-queued > 0 ? root.card-queued + " more waiting" : "";
+                        color: Theme.faint;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+                }
+                ActionButton {
+                    width: 78px;
+                    label: "Allow";
+                    primary: true;
+                    clicked => {
+                        root.decide(true);
+                    }
+                }
+                ActionButton {
+                    width: 78px;
+                    label: "Deny";
+                    clicked => {
+                        root.decide(false);
+                    }
+                }
+            }
+
+            if root.card == 2: VerticalLayout {
+                spacing: 6px;
+                for option[index] in root.card-options: ActionButton {
+                    label: option;
+                    clicked => {
+                        root.answer(index);
+                    }
+                }
+            }
+        }
+    }
+}

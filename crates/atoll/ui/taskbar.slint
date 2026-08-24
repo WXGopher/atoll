@@ -1,0 +1,105 @@
+import { Theme, UsageChip } from "common.slint";
+
+// The usage readout that sits inside the taskbar.
+//
+// Two chips — `● 92%` for Claude, `● 15%` for Codex — stacked on a vertical
+// taskbar and side by side on a horizontal one. Rust decides which; see
+// `taskbar::Along`.
+//
+// Deliberately austere. This is a readout on somebody else's furniture: no
+// border, no card, no background of its own beyond the faintest wash to lift
+// the text off whatever the shell paints behind it. The only colour is the
+// information — the agent's dot and the percentage's tier.
+//
+// It has no TouchArea, and that is not an omission. Clicks and drags on this
+// window are picked up in Rust, from Windows directly; see
+// `taskbar::TaskbarView::poll_click` for what makes that necessary.
+export component TaskbarBar inherits Window {
+    // Matched verbatim by the Win32 code that finds this window to reparent it
+    // into the taskbar.
+    title: "Atoll Usage";
+    no-frame: true;
+    always-on-top: true;
+    background: transparent;
+
+    in property <[UsageChip]> chips;
+    // Set from the taskbar's own shape, not from a docking constant.
+    in property <bool> vertical: true;
+
+    // Mirrors `taskbar::PADDING` and friends.
+    property <length> pad: 4px;
+    property <length> chip-h: 15px;
+    property <length> dot: 7px;
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: 6px;
+        // Barely there: enough to keep 10 px digits legible over a light
+        // taskbar theme, not enough to read as a box sitting on the bar.
+        background: Theme.taskbar-wash;
+
+        if root.vertical: VerticalLayout {
+            padding: root.pad;
+            spacing: 1px;
+            for chip in root.chips: chip-row := HorizontalLayout {
+                height: root.chip-h;
+                spacing: 4px;
+                Rectangle {
+                    width: root.dot;
+                    horizontal-stretch: 0;
+                    Rectangle {
+                        y: (parent.height - root.dot) / 2;
+                        width: root.dot;
+                        height: root.dot;
+                        border-radius: root.dot / 2;
+                        background: chip.agent == "codex"
+                            ? Theme.codex
+                            : (chip.agent == "claude" ? Theme.claude : Theme.idle-dot);
+                    }
+                }
+                Text {
+                    text: chip.value;
+                    color: chip.tier == "low"
+                        ? Theme.spent
+                        : (chip.tier == "warn" ? Theme.thin : (chip.tier == "good" ? Theme.plenty : Theme.faint));
+                    font-size: 11px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    horizontal-alignment: left;
+                }
+            }
+        }
+
+        if !root.vertical: HorizontalLayout {
+            padding: root.pad;
+            spacing: 10px;
+            for chip in root.chips: HorizontalLayout {
+                height: root.chip-h;
+                spacing: 4px;
+                Rectangle {
+                    width: root.dot;
+                    horizontal-stretch: 0;
+                    Rectangle {
+                        y: (parent.height - root.dot) / 2;
+                        width: root.dot;
+                        height: root.dot;
+                        border-radius: root.dot / 2;
+                        background: chip.agent == "codex"
+                            ? Theme.codex
+                            : (chip.agent == "claude" ? Theme.claude : Theme.idle-dot);
+                    }
+                }
+                Text {
+                    text: chip.value;
+                    color: chip.tier == "low"
+                        ? Theme.spent
+                        : (chip.tier == "warn" ? Theme.thin : (chip.tier == "good" ? Theme.plenty : Theme.faint));
+                    font-size: 11px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,177 @@
+import { Button, CheckBox, TabWidget, VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+// The settings window is the one place Atoll shows a conventional window, so it
+// uses the platform style rather than the hand-drawn one everything else has:
+// it is a dialog, and it should look like the operating system's dialogs.
+export component SettingsWindow inherits Window {
+    title: "Atoll Settings";
+    preferred-width: 460px;
+    preferred-height: 300px;
+    min-width: 420px;
+    min-height: 280px;
+
+    in property <bool> claude-installed;
+    // Human-readable state of the hook wiring, e.g. "8 of 8 hooks installed".
+    in property <string> claude-status: "checking…";
+    in property <bool> usage-bridge;
+    // Whether `statusLine` already belongs to somebody else. When it does, the
+    // bridge cannot be installed without displacing it, so the opt-in below
+    // appears and the plain checkbox is not enough on its own.
+    in property <bool> status-line-taken;
+    in property <bool> wrap-status-line;
+
+    // The outcome of the last button press, shown along the bottom.
+    in property <string> message;
+
+    callback install();
+    callback uninstall();
+    callback set-usage-bridge(bool);
+    callback set-wrap-status-line(bool);
+
+    in property <bool> taskbar-enabled: true;
+    // What the readout actually managed to do — embedded in the taskbar, or
+    // floating against it because the shell would not take a child.
+    in property <string> taskbar-status;
+    callback set-taskbar-enabled(bool);
+
+    VerticalBox {
+        TabWidget {
+            Tab {
+                title: "Setup";
+                VerticalBox {
+                    alignment: start;
+                    spacing: 14px;
+
+                    HorizontalBox {
+                        padding: 0px;
+                        alignment: start;
+                        spacing: 12px;
+                        VerticalLayout {
+                            alignment: center;
+                            width: 180px;
+                            Text {
+                                text: "Claude Code";
+                                font-weight: 600;
+                            }
+                            Text {
+                                text: root.claude-status;
+                                font-size: 11px;
+                                wrap: word-wrap;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Button {
+                                text: root.claude-installed ? "Uninstall" : "Install";
+                                primary: !root.claude-installed;
+                                clicked => {
+                                    if (root.claude-installed) {
+                                        root.uninstall();
+                                    } else {
+                                        root.install();
+                                    }
+                                }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            CheckBox {
+                                text: "Usage bridge";
+                                checked: root.usage-bridge;
+                                toggled => {
+                                    root.set-usage-bridge(self.checked);
+                                }
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: "The usage bridge installs Atoll's status line, which is the only place Claude Code reports its rate-limit windows.";
+                        font-size: 11px;
+                        wrap: word-wrap;
+                    }
+
+                    // Only when there is something to be careful about. Atoll
+                    // never displaces a status line the user already has unless
+                    // they tick this themselves.
+                    if root.status-line-taken: VerticalLayout {
+                        spacing: 4px;
+                        CheckBox {
+                            text: "Wrap my existing status line";
+                            checked: root.wrap-status-line;
+                            enabled: root.usage-bridge;
+                            toggled => {
+                                root.set-wrap-status-line(self.checked);
+                            }
+                        }
+                        Text {
+                            text: "You already have a custom status line. Atoll leaves it alone by default, which means no Claude usage. Wrapping runs yours behind Atoll's and passes its output through untouched; uninstalling puts it back exactly as it was.";
+                            font-size: 11px;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    Rectangle {
+                        height: 1px;
+                        background: #80808040;
+                    }
+
+                    HorizontalBox {
+                        padding: 0px;
+                        alignment: start;
+                        spacing: 12px;
+                        VerticalLayout {
+                            alignment: center;
+                            width: 180px;
+                            Text {
+                                text: "Codex";
+                                font-weight: 600;
+                                opacity: 0.5;
+                            }
+                            Text {
+                                text: "coming soon";
+                                font-size: 11px;
+                                opacity: 0.5;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Button {
+                                text: "Install";
+                                enabled: false;
+                            }
+                        }
+                    }
+                }
+            }
+
+            Tab {
+                title: "General";
+                VerticalBox {
+                    alignment: start;
+                    spacing: 12px;
+
+                    CheckBox {
+                        text: "Show usage in the taskbar";
+                        checked: root.taskbar-enabled;
+                        toggled => {
+                            root.set-taskbar-enabled(self.checked);
+                        }
+                    }
+                    Text {
+                        text: root.taskbar-status;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+
+        Text {
+            text: root.message;
+            font-size: 11px;
+            wrap: word-wrap;
+            height: 32px;
+        }
+    }
+}

@@ -1,0 +1,208 @@
+import { Theme, SessionRow, SessionBlock, UsageRow, UsageBar, AgentMark } from "common.slint";
+
+// The detail panel: every session Atoll is tracking, and every rate-limit
+// window both agents have reported, grouped by agent.
+//
+// Opened from the tray icon and from the taskbar readout — the same panel
+// each time, because "what is going on right now" is one question however it
+// is asked.
+//
+// Read-only for now. Jumping back to a session's terminal is M4; until that
+// exists a row that looked clickable would be a lie.
+export component FlyoutWindow inherits Window {
+    title: "Atoll Sessions";
+    no-frame: true;
+    always-on-top: true;
+    background: transparent;
+
+    in property <[SessionRow]> sessions;
+    // A heading row per agent, then one row per rate-limit window. Built by
+    // Rust; see `app::detail_rows`.
+    in property <[UsageRow]> usage-rows;
+
+    // Mirrors `app::HEADING_ROW` and `app::WINDOW_ROW`.
+    property <length> heading-h: 26px;
+    property <length> window-h: 17px;
+
+    property <bool> pulse: false;
+
+    Timer {
+        interval: 700ms;
+        running: true;
+        triggered => {
+            root.pulse = !root.pulse;
+        }
+    }
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: 14px;
+        background: Theme.card-bg;
+        border-width: 1px;
+        border-color: Theme.hairline;
+
+        VerticalLayout {
+            padding: 14px;
+            spacing: 10px;
+            // Rust sizes this window from the row counts, and its estimate runs
+            // a little generous. Without this the slack lands in the middle, as
+            // a hole between the session list and the rule; with it, the slack
+            // is bottom padding and looks like it was meant.
+            alignment: start;
+
+            Text {
+                text: root.sessions.length == 0
+                    ? "No active sessions"
+                    : root.sessions.length + (root.sessions.length == 1 ? " session" : " sessions");
+                color: Theme.faint;
+                font-size: 11px;
+                height: 14px;
+            }
+
+            VerticalLayout {
+                spacing: 9px;
+                for session in root.sessions: HorizontalLayout {
+                    spacing: 10px;
+                    height: 32px;
+
+                    Rectangle {
+                        width: 10px;
+                        SessionBlock {
+                            y: 11px;
+                            size: 10px;
+                            phase: session.phase;
+                            source: session.source;
+                            pulse: root.pulse;
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: 2px;
+                        alignment: center;
+                        Text {
+                            text: session.title;
+                            color: Theme.text;
+                            font-size: 12px;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: session.detail;
+                            color: Theme.faint;
+                            font-size: 11px;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                height: 1px;
+                background: Theme.hairline;
+            }
+
+            VerticalLayout {
+                spacing: 0px;
+                if root.usage-rows.length == 0: Text {
+                    text: "No usage data yet";
+                    color: Theme.faint;
+                    font-size: 11px;
+                }
+
+                // One flat list, two shapes. A heading names the agent and puts
+                // its tightest number where the eye lands first; the rows under
+                // it are that agent's individual windows, each with the bar
+                // that makes "nearly gone" visible without reading.
+                for row in root.usage-rows: Rectangle {
+                    height: row.heading ? root.heading-h : root.window-h;
+
+                    if row.heading: HorizontalLayout {
+                        width: 100%;
+                        height: 100%;
+                        spacing: 7px;
+                        // Space above, not below: the heading belongs to the
+                        // rows under it, and the gap separates it from the
+                        // section before.
+                        padding-top: 9px;
+
+                        Rectangle {
+                            width: 13px;
+                            horizontal-stretch: 0;
+                            AgentMark {
+                                y: (parent.height - 13px) / 2;
+                                size: 13px;
+                                source: row.agent;
+                            }
+                        }
+                        Text {
+                            text: row.label;
+                            color: Theme.text;
+                            font-size: 12px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: row.value;
+                            color: row.tier == "low"
+                                ? Theme.spent
+                                : (row.tier == "warn" ? Theme.thin : Theme.plenty);
+                            font-size: 15px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                            horizontal-alignment: right;
+                            horizontal-stretch: 0;
+                        }
+                    }
+
+                    if !row.heading: HorizontalLayout {
+                        width: 100%;
+                        height: 100%;
+                        spacing: 8px;
+                        padding-left: 20px;
+
+                        Text {
+                            text: row.label;
+                            color: Theme.dim;
+                            font-size: 11px;
+                            width: 52px;
+                            horizontal-stretch: 0;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            min-width: 48px;
+                            UsageBar {
+                                y: (parent.height - 4px) / 2;
+                                width: 100%;
+                                fill: row.fill;
+                                tier: row.tier;
+                            }
+                        }
+                        Text {
+                            text: row.value;
+                            color: Theme.body-text;
+                            font-size: 11px;
+                            font-weight: 600;
+                            width: 30px;
+                            horizontal-stretch: 0;
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: row.resets;
+                            color: Theme.faint;
+                            font-size: 10px;
+                            width: 74px;
+                            horizontal-stretch: 0;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

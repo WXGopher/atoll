@@ -1,0 +1,232 @@
+// Shared palette, data shapes, and the two or three controls every Atoll window
+// draws. Everything except the settings dialog is hand-drawn rather than built
+// from std-widgets: it has to sit on a transparent, frameless, always-on-top
+// surface, where a themed control's own opaque background would show up as a
+// grey box on the desktop.
+
+// One agent session, flattened for display. The Rust side owns the meaning of
+// `phase`; the markup only ever compares it to the four names below.
+export struct SessionRow {
+    // The agent's session id. Not shown; it is how a click finds its session.
+    id: string,
+    // What to call this session: its transcript title, or the project folder.
+    title: string,
+    // The line under the title in the flyout — a tool name, a summary.
+    detail: string,
+    // "running" | "waitingForApproval" | "waitingForAnswer" | "completed"
+    phase: string,
+    // "claude" | "codex"
+    source: string,
+}
+
+// One line of the detail panel's usage block.
+//
+// Two shapes in one struct, told apart by `heading`. A heading is an agent's
+// name with its tightest window's percentage set large beside it — the number
+// somebody opened the panel to see. A window row is that agent's individual
+// limits: a name, a bar, a percentage, and when it rolls over.
+//
+// Rust builds these; see `app::detail_rows`.
+export struct UsageRow {
+    heading: bool,
+    // "claude" | "codex" on a heading; "" on a window row.
+    agent: string,
+    // The agent's name on a heading, the window's name on a window row.
+    label: string,
+    // "81%".
+    value: string,
+    // "good" | "warn" | "low" — see `usage_cache::left_tier`.
+    tier: string,
+    // How much of the window is left, 0.0–1.0. The bar's fill.
+    fill: float,
+    // "resets 00:40", or "" for a window that did not say.
+    resets: string,
+}
+
+// One agent's number in the taskbar readout: a dot in the agent's colour and
+// the percentage left of its tightest rate-limit window.
+export struct UsageChip {
+    // "claude" | "codex", or "" for the placeholder shown when nothing has
+    // reported anything yet.
+    agent: string,
+    // "92%", or "--".
+    value: string,
+    // "good" | "warn" | "low", or "" for the placeholder.
+    tier: string,
+}
+
+export global Theme {
+    // Deep, nearly opaque charcoal. Enough alpha to read as an overlay rather
+    // than a window sitting on the desktop, and no more: at 90 % the browser
+    // chrome behind a panel showed through its text.
+    out property <color> card-bg: #15151ff5;
+    out property <color> hairline: #ffffff26;
+    out property <color> text: #eaeaf2;
+    // The card body — a command, a summary. Below the headline, above the
+    // labels, because it is the thing the user is actually deciding about.
+    out property <color> body-text: #c6c6d6;
+    out property <color> dim: #9797ae;
+    out property <color> faint: #7d7d94;
+
+    // One hue per agent, used for its mark, its dot, and its card's accent.
+    out property <color> claude: #e8824a;
+    out property <color> codex: #4a9de8;
+
+    // How much of a rate-limit window is left, at a glance. The turns are at
+    // 50 % and 20 %; see `usage_cache::left_tier`.
+    out property <color> plenty: #55c98d;
+    out property <color> thin: #e3bf52;
+    out property <color> spent: #e8664a;
+    // The groove a usage bar's fill sits in.
+    out property <color> trough: #ffffff1f;
+    // An agent that has reported nothing yet.
+    out property <color> idle-dot: #6a6a80;
+
+    // The taskbar readout's only background: barely there, and dark, because a
+    // taskbar is dark on every theme Windows ships. Enough to keep 11 px digits
+    // legible over whatever the shell paints; not enough to read as a box.
+    out property <color> taskbar-wash: #00000033;
+
+    // The affirmative button is the only saturated fill Atoll draws, so that
+    // "the thing that grants a permission" is never ambiguous.
+    out property <color> allow: #2f8560;
+    out property <color> allow-hot: #379a6e;
+    out property <color> soft: #ffffff14;
+    out property <color> soft-hot: #ffffff29;
+}
+
+// The agent's mark, drawn rather than borrowed: a four-point sparkle for
+// Claude, angle brackets for Codex. Generic shapes that read at a glance and
+// are nobody's trademark.
+//
+// The view box is cropped to the drawing rather than to the 64-unit space the
+// commands were written in, so the mark fills whatever box it is given — at
+// 12 px in a panel row there is nothing to spare for empty margins.
+export component AgentMark {
+    in property <string> source;
+    in property <length> size: 12px;
+    in property <float> weight: 1.0;
+
+    width: root.size;
+    height: root.size;
+
+    if root.source != "codex": Path {
+        width: 100%;
+        height: 100%;
+        viewbox-x: 17;
+        viewbox-y: 17;
+        viewbox-width: 30;
+        viewbox-height: 30;
+        fill: Theme.claude;
+        opacity: root.weight;
+        commands: "M 32 18 Q 33.4 30.6 46 32 Q 33.4 33.4 32 46 Q 30.6 33.4 18 32 Q 30.6 30.6 32 18 Z";
+    }
+
+    if root.source == "codex": Path {
+        width: 100%;
+        height: 100%;
+        viewbox-x: 15;
+        viewbox-y: 20;
+        viewbox-width: 34;
+        viewbox-height: 24;
+        stroke: Theme.codex;
+        stroke-width: 3.5px;
+        opacity: root.weight;
+        commands: "M 27 22 L 17 32 L 27 42 M 37 22 L 47 32 L 37 42";
+    }
+}
+
+// How much of a rate-limit window is left, as a length rather than a number.
+//
+// The panel used to be a column of sentences, every one of them the same shade
+// and the same weight, and finding the window that was about to run out meant
+// reading all of them. A bar is the whole point: the short one is short from
+// across the room.
+export component UsageBar inherits Rectangle {
+    // 0.0-1.0.
+    in property <float> fill;
+    in property <string> tier;
+
+    height: 4px;
+    border-radius: 2px;
+    background: Theme.trough;
+
+    Rectangle {
+        x: 0px;
+        // Never quite nothing: a window with 0 % left still has to look like a
+        // bar that has run out rather than like a bar that failed to draw.
+        width: max(2px, parent.width * clamp(root.fill, 0.0, 1.0));
+        height: parent.height;
+        border-radius: parent.border-radius;
+        background: root.tier == "low"
+            ? Theme.spent
+            : (root.tier == "warn" ? Theme.thin : Theme.plenty);
+    }
+}
+
+// A button that draws nothing but its own rounded fill: no theme, no shadow, no
+// focus ring to fight the transparent background.
+export component ActionButton inherits Rectangle {
+    in property <string> label;
+    // Filled and green, versus outlined and quiet.
+    in property <bool> primary;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 30px;
+    border-radius: 9px;
+    background: root.primary
+        ? (touch.has-hover ? Theme.allow-hot : Theme.allow)
+        : (touch.has-hover ? Theme.soft-hot : Theme.soft);
+    border-width: root.primary ? 0px : 1px;
+    border-color: Theme.hairline;
+    opacity: root.enabled ? 1.0 : 0.4;
+
+    animate background { duration: 120ms; }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        Text {
+            text: root.label;
+            color: Theme.text;
+            font-size: 12px;
+            font-weight: root.primary ? 600 : 400;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+// The coloured square that stands for one session in the tray panel. Full
+// strength while the agent works, breathing while it waits on the user, nearly
+// gone once it is done.
+export component SessionBlock inherits Rectangle {
+    in property <string> phase;
+    in property <string> source;
+    // Driven by a single timer in the parent so every waiting block breathes in
+    // step rather than each starting from whenever it appeared.
+    in property <bool> pulse;
+    in property <length> size: 18px;
+
+    width: root.size;
+    height: root.size;
+    border-radius: root.size / 3;
+    background: root.source == "codex" ? Theme.codex : Theme.claude;
+    opacity: root.phase == "running"
+        ? 1.0
+        : (root.phase == "waitingForApproval" || root.phase == "waitingForAnswer")
+            ? (root.pulse ? 1.0 : 0.35)
+            : 0.22;
+
+    animate opacity { duration: 700ms; easing: ease-in-out; }
+}

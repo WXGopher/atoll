@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build & test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Build
+        run: cargo build --workspace
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Privacy scan
+        shell: bash
+        # The needles live in a repository secret so this public file carries
+        # no identifiers of its own. Set PRIVACY_NEEDLES to an extended regex
+        # (e.g. "localpart|Users[/\\]+account") under Settings → Secrets and
+        # variables → Actions. Forks and secretless checkouts skip the scan.
+        env:
+          PRIVACY_NEEDLES: ${{ secrets.PRIVACY_NEEDLES }}
+        run: |
+          if [ -z "$PRIVACY_NEEDLES" ]; then
+            echo "PRIVACY_NEEDLES is not set; skipping the privacy scan."
+            exit 0
+          fi
+          if git grep -riE "$PRIVACY_NEEDLES" -- .; then
+            echo "::error::Machine-local identifiers found in tracked files"
+            exit 1
+          fi
+          echo "Privacy scan clean."
