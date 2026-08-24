@@ -171,11 +171,14 @@ pub const CLAUDE_USAGE_BETA: &str = "oauth-2025-04-20";
 
 /// How long a reading from the endpoint is reused before asking again.
 ///
-/// The endpoint rate-limits, and it is shared with whatever else the user runs
-/// against it — their own status line script, most likely — so Atoll does not
-/// ask more often than this. How soon a *failed* ask is retried is the
-/// caller's business: see `usage_cache::fetch_claude_limits` in the app.
-pub const CLAUDE_USAGE_TTL_SECS: u64 = 30;
+/// The endpoint rate-limits **per token**, and the token is shared with
+/// whatever else the user runs against it — their own status line script,
+/// and Claude Code itself — so Atoll does not ask more often than this, and
+/// mostly does not ask at all: a reading any of those others already fetched
+/// counts (see `usage_cache::fetch_claude_limits` in the app), and only its
+/// absence sends Atoll to the network. How soon a *failed* ask is retried is
+/// likewise the caller's business.
+pub const CLAUDE_USAGE_TTL_SECS: u64 = 60;
 
 const CACHE_LIMITS_KEY: &str = "limits";
 const CACHE_FETCHED_AT_KEY: &str = "fetchedAt";
@@ -260,8 +263,11 @@ pub fn claude_usage_cache_path() -> io::Result<PathBuf> {
     Ok(atoll_data_dir()?.join("claude-usage.json"))
 }
 
-/// The user's own status line cache, read-only, as a last resort when the
-/// endpoint cannot be reached and Atoll's own cache has nothing.
+/// The user's own status line cache, read-only.
+///
+/// Not a last resort but a first one: every reading in it is a request the
+/// user's own tooling already spent against the shared rate limit, and a
+/// reading Atoll gets for free.
 pub fn foreign_usage_cache_path() -> io::Result<PathBuf> {
     let home = home_dir().ok_or_else(|| {
         io::Error::new(

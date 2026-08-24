@@ -257,69 +257,147 @@ pub fn window_label(window_minutes: Option<u64>) -> String {
 /// dressed up as a fresh reading for a whole TTL — that is how one transient
 /// refusal used to hold the readout a minute behind, and a run of them held it
 /// behind indefinitely. Short enough to recover quickly, long enough that a
-/// rate-limiting endpoint is not hammered.
+/// struggling endpoint is not hammered.
 const FAILURE_RETRY_SECS: u64 = 15;
+
+/// How long to stand back once the endpoint has answered 429.
+///
+/// The rate limit is on the shared token, not on Atoll: retrying quickly
+/// spends the very budget the user's own status line needs to recover. The
+/// readout does not go dark meanwhile — the status line's own cache keeps
+/// feeding it through [`freshest_on_disk`].
+const RATE_LIMIT_RETRY_SECS: u64 = 120;
 
 /// How fresh the reading has to be before fetching again on the user's click
 /// is pointless rather than polite.
 pub const CLICK_FRESH_SECS: u64 = 15;
 
-/// Claude's rate-limit windows, from the endpoint if it answers and from
-/// whatever is on disk if it does not. The endpoint is asked whenever the
-/// reading on disk is at least `min_age_secs` old — the TTL for the routine
-/// cadence, something smaller for the moments somebody is actually looking.
+/// Claude's rate-limit windows: the freshest reading anyone on this machine
+/// already holds, else from the endpoint. The endpoint is asked only when the
+/// best reading on disk is at least `min_age_secs` old — the TTL for the
+/// routine cadence, something smaller for the moments somebody is actually
+/// looking.
 ///
 /// **Blocking, and not for the UI thread.** The caller runs this on a worker and
 /// takes the result through a channel.
 ///
-/// The chain is deliberate: a fresh reading, else Atoll's own cache however
-/// stale, else the cache the user's own status line script keeps. Numbers a
-/// minute old beat no numbers, and numbers an hour old beat a blank panel — the
-/// panel says when each window resets, so a stale reading looks stale.
+/// The order is the economics: the user's own status line script fetches on
+/// its own schedule against the same per-token rate limit, so a reading it
+/// already paid for is a request Atoll never has to make. Most of the time
+/// Atoll piggybacks and sends nothing at all.
 pub fn fetch_claude_limits(now: u64, min_age_secs: u64) -> ClaudeLimits {
     let own_cache = usage::claude_usage_cache_path().ok();
-    let cached = own_cache
-        .as_deref()
+    let best = freshest_on_disk(own_cache.as_deref());
+
+    if !best.is_stale(now, min_age_secs) {
+        return best;
+    }
+    match ask_the_endpoint(now, own_cache.as_deref()) {
+        Ok(fresh) => {
+            note_fetch_recovered();
+            fresh
+        }
+        Err(error) => {
+            // The fallback needs a stamp: with none it reads as stale on the
+            // very next tick and the fetch runs again half a second later —
+            // a request loop against an endpoint that may already be
+            // rate-limiting us. Stamped *now* it would parade as fresh for a
+            // whole TTL. So it is stamped exactly stale enough to be retried
+            // when the failure deserves: soon for a transient error, two
+            // minutes out for a 429 on the shared token — which can put the
+            // stamp in the near future, and `is_stale`'s saturating age
+            // arithmetic reads that as "brand new", which is the intent.
+            let retry = if error.to_string().contains("HTTP 429") {
+                RATE_LIMIT_RETRY_SECS
+            } else {
+                FAILURE_RETRY_SECS
+            };
+            note_fetch_failure(&error);
+            let mut fallback = best;
+            fallback.fetched_at = Some(failure_stamp(now, retry));
+            fallback
+        }
+    }
+}
+
+/// The freshest Claude reading already on disk: Atoll's own cache or the
+/// status line script's, whichever was fetched later.
+///
+/// The script's file carries no stamp of its own, so the file's write time
+/// stands in — the script writes it only on a successful fetch, which makes
+/// the write time the fetch time.
+fn freshest_on_disk(own_cache: Option<&std::path::Path>) -> ClaudeLimits {
+    let own = own_cache
         .and_then(|path| usage::read_claude_usage_cache(path).ok().flatten())
         .unwrap_or_default();
-
-    if !cached.is_stale(now, min_age_secs) {
-        return cached;
+    let foreign = foreign_with_mtime();
+    match foreign {
+        Some(foreign)
+            if !foreign.is_empty() && (own.is_empty() || foreign.fetched_at > own.fetched_at) =>
+        {
+            foreign
+        }
+        _ => own,
     }
-    if let Some(fresh) = ask_the_endpoint(now, own_cache.as_deref()) {
-        return fresh;
-    }
+}
 
-    // The fallback needs a stamp: a reading with no timestamp reads as stale on
-    // the very next tick, and the fetch runs again half a second later — which
-    // is how a fallback becomes a request loop against an endpoint that is
-    // already rate-limiting us. But it must not be stamped *now* either, or the
-    // failure parades as a fresh reading for a whole TTL. It is stamped just
-    // old enough that the next attempt comes in [`FAILURE_RETRY_SECS`].
-    let mut fallback = if cached.is_empty() {
-        usage::foreign_usage_cache_path()
+/// The status line script's cache, stamped with the file's own write time
+/// when the JSON carries no stamp.
+fn foreign_with_mtime() -> Option<ClaudeLimits> {
+    let path = usage::foreign_usage_cache_path().ok()?;
+    let mut limits = usage::read_claude_usage_cache(&path).ok().flatten()?;
+    if limits.fetched_at.is_none() {
+        limits.fetched_at = std::fs::metadata(&path)
             .ok()
-            .and_then(|path| usage::read_claude_usage_cache(&path).ok().flatten())
-            .unwrap_or_default()
-    } else {
-        cached
-    };
-    fallback.fetched_at = Some(failure_stamp(now));
-    fallback
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|age| age.as_secs());
+    }
+    Some(limits)
 }
 
 /// The `fetched_at` a failed fetch's fallback carries: stale again in
-/// [`FAILURE_RETRY_SECS`] rather than in a full TTL.
-fn failure_stamp(now: u64) -> u64 {
-    (now + FAILURE_RETRY_SECS).saturating_sub(usage::CLAUDE_USAGE_TTL_SECS)
+/// `retry_secs` rather than in a full TTL.
+fn failure_stamp(now: u64, retry_secs: u64) -> u64 {
+    (now + retry_secs).saturating_sub(usage::CLAUDE_USAGE_TTL_SECS)
 }
 
-/// One authenticated GET. `None` for any failure at all — no token, no network,
-/// a rate-limit rebuff — because every one of them means "use what you have".
-fn ask_the_endpoint(now: u64, cache_path: Option<&std::path::Path>) -> Option<ClaudeLimits> {
+/// One line in the debug log per *change* of failure, not per failure: a 429
+/// every two minutes for an afternoon is one fact, not a hundred lines. A
+/// recovery closes the entry so the log reads as episodes.
+fn note_fetch_failure(error: &std::io::Error) {
+    let text = error.to_string();
+    let mut last = last_fetch_error().lock().unwrap_or_else(|held| held.into_inner());
+    if *last != text {
+        *last = text.clone();
+        crate::util::debug_log(&format!("usage fetch failing: {text}"));
+    }
+}
+
+fn note_fetch_recovered() {
+    let mut last = last_fetch_error().lock().unwrap_or_else(|held| held.into_inner());
+    if !last.is_empty() {
+        last.clear();
+        crate::util::debug_log("usage fetch recovered");
+    }
+}
+
+fn last_fetch_error() -> &'static std::sync::Mutex<String> {
+    static LAST: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+    &LAST
+}
+
+/// One authenticated GET. Every failure — no token, no network, a rate-limit
+/// rebuff, an answer with nothing in it — means "use what you have", and the
+/// error says which one it was so the caller can pick its retry.
+fn ask_the_endpoint(
+    now: u64,
+    cache_path: Option<&std::path::Path>,
+) -> Result<ClaudeLimits, std::io::Error> {
     let token = usage::claude_credentials_path()
         .ok()
-        .and_then(|path| usage::read_claude_oauth_token(&path))?;
+        .and_then(|path| usage::read_claude_oauth_token(&path))
+        .ok_or_else(|| std::io::Error::other("no OAuth token to ask with"))?;
 
     // The token lives in this scope and nowhere else: not in a log line, not in
     // an error, not on disk.
@@ -334,20 +412,20 @@ fn ask_the_endpoint(now: u64, cache_path: Option<&std::path::Path>) -> Option<Cl
             ("anthropic-beta", usage::CLAUDE_USAGE_BETA),
             ("Accept", "application/json"),
         ],
-    )
-    .ok()?;
+    )?;
     drop(authorization);
 
-    let value: Value = serde_json::from_str(&body).ok()?;
+    let value: Value =
+        serde_json::from_str(&body).map_err(|_| std::io::Error::other("response was not JSON"))?;
     let mut limits = usage::parse_claude_limits(&value);
     if limits.is_empty() {
-        return None;
+        return Err(std::io::Error::other("response carried no limits"));
     }
     limits.fetched_at = Some(now);
     if let Some(path) = cache_path {
         let _ = usage::write_claude_usage_cache(path, &value, now);
     }
-    Some(limits)
+    Ok(limits)
 }
 
 #[cfg(test)]
@@ -407,22 +485,31 @@ mod tests {
         }
     }
 
-    /// A failed fetch's fallback goes stale again in [`FAILURE_RETRY_SECS`],
-    /// not in a full TTL — that is the whole difference between one bad
-    /// request costing seconds and costing a minute of stale numbers.
+    /// A failed fetch's fallback goes stale again on the failure's own
+    /// schedule, not in a full TTL — a transient error is retried in seconds,
+    /// a 429 on the shared token is given two minutes of air.
     #[test]
-    fn a_failure_is_retried_sooner_than_a_success() {
+    fn a_failure_is_retried_on_its_own_schedule() {
         use atoll_core::usage::CLAUDE_USAGE_TTL_SECS;
 
-        let failed = ClaudeLimits {
+        let transient = ClaudeLimits {
             limits: claude().limits,
-            fetched_at: Some(failure_stamp(NOW)),
+            fetched_at: Some(failure_stamp(NOW, FAILURE_RETRY_SECS)),
         };
-        assert!(!failed.is_stale(NOW + FAILURE_RETRY_SECS - 1, CLAUDE_USAGE_TTL_SECS));
-        assert!(failed.is_stale(NOW + FAILURE_RETRY_SECS, CLAUDE_USAGE_TTL_SECS));
+        assert!(!transient.is_stale(NOW + FAILURE_RETRY_SECS - 1, CLAUDE_USAGE_TTL_SECS));
+        assert!(transient.is_stale(NOW + FAILURE_RETRY_SECS, CLAUDE_USAGE_TTL_SECS));
+
+        // A 429 stamps into the near future; saturating age arithmetic reads
+        // that as "brand new" until the backoff has passed.
+        let limited = ClaudeLimits {
+            limits: claude().limits,
+            fetched_at: Some(failure_stamp(NOW, RATE_LIMIT_RETRY_SECS)),
+        };
+        assert!(!limited.is_stale(NOW + RATE_LIMIT_RETRY_SECS - 1, CLAUDE_USAGE_TTL_SECS));
+        assert!(limited.is_stale(NOW + RATE_LIMIT_RETRY_SECS, CLAUDE_USAGE_TTL_SECS));
 
         // And a clock early enough to underflow still answers.
-        assert_eq!(failure_stamp(0), 0);
+        assert_eq!(failure_stamp(0, FAILURE_RETRY_SECS), 0);
     }
 
     #[test]

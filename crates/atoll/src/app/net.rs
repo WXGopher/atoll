@@ -2,8 +2,9 @@
 //!
 //! # Why WinHTTP
 //!
-//! Atoll needs exactly one request: Claude Code's usage endpoint, a couple of
-//! times a minute.
+//! Atoll needs exactly one request: Claude Code's usage endpoint, at most once
+//! a minute and usually not at all — a reading the user's own status line
+//! already fetched is reused instead.
 //! A Rust HTTP client would bring a TLS stack and a root-certificate bundle with
 //! it — megabytes, for one GET, in a binary that sits in the notification area
 //! all day. WinHTTP is already on the machine, already trusts the certificate
