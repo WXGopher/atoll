@@ -87,6 +87,16 @@ Or build from source, with a recent stable Rust toolchain:
 cargo build --workspace --release
 ```
 
+Release binaries are built and published by the
+[release workflow](.github/workflows/release.yml) on GitHub's own runners —
+no hand-built artifact is ever uploaded. Each zip ships with its SHA-256 in
+`SHA256SUMS.txt` and a signed [build provenance attestation](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations)
+tying it to the exact commit and workflow run that produced it:
+
+```sh
+gh attestation verify atoll-v0.1.0-windows-x86_64.zip --repo WXGopher/atoll
+```
+
 To run Atoll at login, put a shortcut to
 `%LOCALAPPDATA%\Atoll\bin\atoll.exe` into `shell:startup` — a built-in
 run-at-login switch is on the list below.

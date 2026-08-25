@@ -6,6 +6,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   build:
@@ -28,9 +30,22 @@ jobs:
           New-Item -ItemType Directory -Force staging | Out-Null
           Copy-Item target/release/atoll.exe, target/release/atoll-hook.exe, README.md, LICENSE staging/
           Compress-Archive -Path staging/* -DestinationPath "atoll-${{ github.ref_name }}-windows-x86_64.zip"
+          Get-FileHash "atoll-${{ github.ref_name }}-windows-x86_64.zip" -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } |
+            Set-Content SHA256SUMS.txt
+
+      # Cryptographic proof that this exact archive was built by this
+      # workflow, from this commit, on GitHub's own runners. Verify with:
+      #   gh attestation verify <zip> --repo WXGopher/atoll
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: atoll-*-windows-x86_64.zip
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          files: atoll-*-windows-x86_64.zip
+          files: |
+            atoll-*-windows-x86_64.zip
+            SHA256SUMS.txt
           generate_release_notes: true
