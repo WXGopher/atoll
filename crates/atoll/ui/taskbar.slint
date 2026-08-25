@@ -3,8 +3,9 @@ import { Theme, UsageChip } from "common.slint";
 // The usage readout that sits inside the taskbar.
 //
 // One block per agent: `● 92%` for the quota, and — while the agent has live
-// sessions — a second line with a breathing dot and the count. Blocks stack on
-// a vertical taskbar and sit side by side on a horizontal one. Rust decides
+// sessions — a task line with a segment per state: `? 1` waiting on the human,
+// a breathing dot with the running count, `✓ 2` finished. Blocks stack on a
+// vertical taskbar and sit side by side on a horizontal one. Rust decides
 // which; see `taskbar::Along`.
 //
 // Deliberately austere. This is a readout on somebody else's furniture: no
@@ -61,28 +62,76 @@ component AgentBlock {
                 horizontal-alignment: left;
             }
         }
-        if chip.busy > 0: HorizontalLayout {
+        // The task line: a segment per state with anything in it. Widths and
+        // gaps are mirrored by `taskbar::task_line_width`, which is what sizes
+        // the window around this.
+        if chip.pending + chip.running + chip.done > 0: HorizontalLayout {
             height: root.chip-h;
-            spacing: 4px;
-            Rectangle {
-                width: root.dot;
-                horizontal-stretch: 0;
-                Rectangle {
-                    y: (parent.height - root.dot) / 2;
-                    width: root.dot;
-                    height: root.dot;
-                    border-radius: root.dot / 2;
-                    background: root.agent-color();
+            alignment: start;
+            spacing: 5px;
+
+            // Blocked on the human — the one state that is the user's fault,
+            // so it takes the warning amber and the pulse.
+            if chip.pending > 0: HorizontalLayout {
+                spacing: 2px;
+                Text {
+                    text: "?";
+                    color: Theme.thin;
                     opacity: 0.25 + 0.75 * root.pulse;
+                    font-size: 11px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: chip.pending;
+                    color: Theme.thin;
+                    font-size: 11px;
+                    font-weight: 600;
+                    vertical-alignment: center;
                 }
             }
-            Text {
-                text: chip.busy;
-                color: Theme.faint;
-                font-size: 11px;
-                font-weight: 600;
-                vertical-alignment: center;
-                horizontal-alignment: left;
+
+            // Working: the agent's own colour, breathing.
+            if chip.running > 0: HorizontalLayout {
+                spacing: 2px;
+                Rectangle {
+                    width: root.dot;
+                    horizontal-stretch: 0;
+                    Rectangle {
+                        y: (parent.height - root.dot) / 2;
+                        width: root.dot;
+                        height: root.dot;
+                        border-radius: root.dot / 2;
+                        background: root.agent-color();
+                        opacity: 0.25 + 0.75 * root.pulse;
+                    }
+                }
+                Text {
+                    text: chip.running;
+                    color: Theme.faint;
+                    font-size: 11px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+
+            // Finished, and quiet about it.
+            if chip.done > 0: HorizontalLayout {
+                spacing: 2px;
+                Text {
+                    text: "✓";
+                    color: Theme.faint;
+                    font-size: 11px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: chip.done;
+                    color: Theme.faint;
+                    font-size: 11px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
             }
         }
     }

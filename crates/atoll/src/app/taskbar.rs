@@ -53,6 +53,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use atoll_core::protocol::HookSource;
+use atoll_core::state::AgentTasks;
 use slint::ComponentHandle;
 
 use super::ui::TaskbarBar;
@@ -77,6 +78,14 @@ const DOT_GAP: f32 = 4.0;
 const VALUE_WIDTH: f32 = 26.0;
 /// The gap between two chips side by side on a horizontal taskbar.
 const CHIP_SPACING: f32 = 10.0;
+
+/// The task line's segments: a state mark, a small gap, the count's digits,
+/// and the gap between one segment and the next. The mark and digit widths are
+/// generous rather than measured — a window a pixel too wide clips nothing.
+const TASK_MARK: f32 = 9.0;
+const TASK_MARK_GAP: f32 = 2.0;
+const TASK_DIGIT: f32 = 7.0;
+const TASK_SEGMENT_GAP: f32 = 5.0;
 
 /// How far the readout stays from the notification area and from the taskbar's
 /// own edges.
@@ -123,7 +132,7 @@ impl Along {
 }
 
 /// One agent's block in the readout: its quota on the first line, and — while
-/// it has sessions actually doing something — a task count on a second.
+/// it has live sessions — a task line on a second, one segment per state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Chip {
     /// `None` for the placeholder shown when no agent has reported anything.
@@ -132,8 +141,8 @@ pub struct Chip {
     pub value: String,
     /// `""` | `"good"` | `"warn"` | `"low"`; see [`crate::usage_cache::left_tier`].
     pub tier: &'static str,
-    /// Live sessions — running or waiting on the human. Zero hides the line.
-    pub busy: usize,
+    /// Live sessions by state. All zero hides the task line.
+    pub tasks: AgentTasks,
 }
 
 /// What the app knows about one agent when the readout is being laid out.
@@ -142,8 +151,8 @@ pub struct AgentLine {
     pub agent: HookSource,
     /// The user's own switch: an agent they never run gives its rows back.
     pub show: bool,
-    /// Live sessions, from [`atoll_core::state::SessionTable::busy`].
-    pub busy: usize,
+    /// Live sessions, from [`atoll_core::state::SessionTable::tasks`].
+    pub tasks: AgentTasks,
 }
 
 /// The readout's contents: one block per agent the user wants shown that has
@@ -164,7 +173,7 @@ pub fn chips(
         .filter(|line| line.show)
         .filter_map(|line| {
             let window = usage.tightest_window(line.agent);
-            if window.is_none() && line.busy == 0 {
+            if window.is_none() && line.tasks.total() == 0 {
                 return None;
             }
             Some(Chip {
@@ -177,7 +186,7 @@ pub fn chips(
                     .as_ref()
                     .map(|window| crate::usage_cache::left_tier(window.left, good_at, warn_at))
                     .unwrap_or(""),
-                busy: line.busy,
+                tasks: line.tasks,
             })
         })
         .collect();
@@ -186,19 +195,35 @@ pub fn chips(
             agent: None,
             value: "--".to_string(),
             tier: "",
-            busy: 0,
+            tasks: AgentTasks::default(),
         });
     }
     chips
 }
 
-/// How big the readout is, in logical pixels — one entry per agent block,
-/// `true` for a block that is two rows tall because its agent has live tasks.
-pub fn bar_size(blocks: &[bool], along: Along) -> (f32, f32) {
+/// How wide one block's task line is: a segment per non-zero state, each a
+/// mark and a count. Zero when there is no task line at all.
+fn task_line_width(tasks: AgentTasks) -> f32 {
+    let segments: Vec<f32> = [tasks.pending, tasks.running, tasks.done]
+        .iter()
+        .filter(|count| **count > 0)
+        .map(|count| TASK_MARK + TASK_MARK_GAP + count.to_string().len() as f32 * TASK_DIGIT)
+        .collect();
+    if segments.is_empty() {
+        return 0.0;
+    }
+    segments.iter().sum::<f32>() + (segments.len() - 1) as f32 * TASK_SEGMENT_GAP
+}
+
+/// How big the readout is, in logical pixels — one entry per agent block, each
+/// carrying its task counts, because a block with tasks is two rows tall and a
+/// task line can be wider than the quota line above it.
+pub fn bar_size(blocks: &[AgentTasks], along: Along) -> (f32, f32) {
     let count = blocks.len().max(1) as f32;
     let chip_width = DOT + DOT_GAP + VALUE_WIDTH;
-    let block_height = |two_rows: &bool| {
-        if *two_rows {
+    let block_width = |tasks: &AgentTasks| chip_width.max(task_line_width(*tasks));
+    let block_height = |tasks: &AgentTasks| {
+        if tasks.total() > 0 {
             CHIP_HEIGHT * 2.0 + CHIP_GAP
         } else {
             CHIP_HEIGHT
@@ -206,13 +231,15 @@ pub fn bar_size(blocks: &[bool], along: Along) -> (f32, f32) {
     };
     match along {
         Along::Vertical => (
-            PADDING * 2.0 + chip_width,
+            PADDING * 2.0 + blocks.iter().map(block_width).fold(chip_width, f32::max),
             PADDING * 2.0
                 + blocks.iter().map(block_height).sum::<f32>().max(CHIP_HEIGHT)
                 + (count - 1.0) * BLOCK_GAP,
         ),
         Along::Horizontal => (
-            PADDING * 2.0 + count * chip_width + (count - 1.0) * CHIP_SPACING,
+            PADDING * 2.0
+                + blocks.iter().map(block_width).sum::<f32>().max(chip_width)
+                + (count - 1.0) * CHIP_SPACING,
             PADDING * 2.0
                 + blocks
                     .iter()
@@ -287,9 +314,10 @@ pub struct TaskbarView {
     pressed_right: Cell<bool>,
     /// Its logical size, from [`bar_size`].
     size: Cell<(f32, f32)>,
-    /// Whether any block currently shows a task line — which is the only time
-    /// the breathing dot needs animating; see [`Self::breathe`].
-    has_busy: Cell<bool>,
+    /// Whether any block has pending or running tasks — the only states whose
+    /// marks animate, and so the only time [`Self::breathe`] repaints. A block
+    /// showing nothing but finished sessions sits perfectly still.
+    breathing: Cell<bool>,
     shown: Cell<bool>,
 }
 
@@ -302,8 +330,8 @@ impl TaskbarView {
             embedded: Cell::new(false),
             pressed_left: Cell::new(false),
             pressed_right: Cell::new(false),
-            size: Cell::new(bar_size(&[false, false], Along::Vertical)),
-            has_busy: Cell::new(false),
+            size: Cell::new(bar_size(&[AgentTasks::default(); 2], Along::Vertical)),
+            breathing: Cell::new(false),
             shown: Cell::new(false),
         })
     }
@@ -370,7 +398,8 @@ impl TaskbarView {
     pub fn set_chips(&self, chips: &[Chip], along: Along) {
         use slint::{Model, ModelRc, VecModel};
 
-        self.has_busy.set(chips.iter().any(|chip| chip.busy > 0));
+        self.breathing
+            .set(chips.iter().any(|chip| chip.tasks.active() > 0));
         let rows: Vec<super::ui::UsageChip> = chips
             .iter()
             .map(|chip| super::ui::UsageChip {
@@ -381,13 +410,19 @@ impl TaskbarView {
                     .into(),
                 value: chip.value.clone().into(),
                 tier: chip.tier.into(),
-                busy: chip.busy as i32,
+                pending: chip.tasks.pending as i32,
+                running: chip.tasks.running as i32,
+                done: chip.tasks.done as i32,
             })
             .collect();
         // Nothing changed, so nothing is redrawn: this runs on every tick.
         let unchanged = self.ui.get_chips().row_count() == rows.len()
             && self.ui.get_chips().iter().zip(rows.iter()).all(|(old, new)| {
-                old.value == new.value && old.agent == new.agent && old.busy == new.busy
+                old.value == new.value
+                    && old.agent == new.agent
+                    && old.pending == new.pending
+                    && old.running == new.running
+                    && old.done == new.done
             });
         if unchanged && self.ui.get_vertical() == along.is_vertical() {
             return;
@@ -396,7 +431,7 @@ impl TaskbarView {
         self.ui.set_vertical(along.is_vertical());
         self.ui.set_chips(ModelRc::new(VecModel::from(rows)));
 
-        let blocks: Vec<bool> = chips.iter().map(|chip| chip.busy > 0).collect();
+        let blocks: Vec<AgentTasks> = chips.iter().map(|chip| chip.tasks).collect();
         let size = bar_size(&blocks, along);
         self.size.set(size);
         self.ui
@@ -404,13 +439,14 @@ impl TaskbarView {
             .set_size(slint::LogicalSize::new(size.0, size.1));
     }
 
-    /// Advance the breathing dot to `phase` (0..1), but only while a task line
-    /// is showing — an idle readout must not repaint at all. Driven from the
-    /// app's existing 100 ms tray timer rather than a display-rate animation,
-    /// which is the difference between a readout that sips and one that keeps
-    /// a laptop's GPU warm; see the tray icon's pulse for the precedent.
+    /// Advance the animated marks to `phase` (0..1), but only while something
+    /// is pending or running — a readout at rest, finished sessions included,
+    /// must not repaint at all. Driven from the app's existing 100 ms tray
+    /// timer rather than a display-rate animation, which is the difference
+    /// between a readout that sips and one that keeps a laptop's GPU warm; see
+    /// the tray icon's pulse for the precedent.
     pub fn breathe(&self, phase: f32) {
-        if self.has_busy.get() {
+        if self.breathing.get() {
             self.ui.set_pulse(phase);
         }
     }
@@ -656,19 +692,27 @@ mod tests {
         lines(0, 0)
     }
 
-    fn lines(claude_busy: usize, codex_busy: usize) -> [AgentLine; 2] {
+    /// `running` sessions only; the state split has its own tests.
+    fn lines(claude_running: usize, codex_running: usize) -> [AgentLine; 2] {
         [
             AgentLine {
                 agent: HookSource::Claude,
                 show: true,
-                busy: claude_busy,
+                tasks: running(claude_running),
             },
             AgentLine {
                 agent: HookSource::Codex,
                 show: true,
-                busy: codex_busy,
+                tasks: running(codex_running),
             },
         ]
+    }
+
+    fn running(count: usize) -> AgentTasks {
+        AgentTasks {
+            running: count,
+            ..AgentTasks::default()
+        }
     }
 
     const GOOD: i64 = crate::usage_cache::LEFT_COMFORTABLE;
@@ -707,19 +751,34 @@ mod tests {
         assert_eq!((empty[0].value.as_str(), empty[0].tier), ("--", ""));
     }
 
-    /// The task count rides along per agent, and live tasks earn an agent its
+    /// The task counts ride along per agent, and live tasks earn an agent its
     /// block even before any usage has been read — a running session is the
     /// one thing more current than a quota.
     #[test]
     fn live_tasks_ride_along_and_earn_a_block_of_their_own() {
         let both = chips(&usage(Some(31.0), Some(85.0)), &lines(2, 0), GOOD, WARN);
-        assert_eq!(both[0].busy, 2);
-        assert_eq!(both[1].busy, 0);
+        assert_eq!(both[0].tasks.running, 2);
+        assert_eq!(both[1].tasks.total(), 0);
 
         let unread = chips(&UsageSnapshot::default(), &lines(1, 0), GOOD, WARN);
         assert_eq!(unread.len(), 1);
         assert_eq!(unread[0].agent, Some(HookSource::Claude));
-        assert_eq!((unread[0].value.as_str(), unread[0].busy), ("--", 1));
+        assert_eq!((unread[0].value.as_str(), unread[0].tasks.running), ("--", 1));
+
+        // A block with nothing but finished sessions still shows its line — a
+        // turn that ended while the user was elsewhere is the readout's whole
+        // reason to have a task line at all.
+        let done_only = [AgentLine {
+            agent: HookSource::Claude,
+            show: true,
+            tasks: AgentTasks {
+                done: 2,
+                ..AgentTasks::default()
+            },
+        }];
+        let finished = chips(&UsageSnapshot::default(), &done_only, GOOD, WARN);
+        assert_eq!(finished.len(), 1);
+        assert_eq!(finished[0].tasks.done, 2);
     }
 
     /// The user's own switch: an agent turned off contributes nothing, tasks
@@ -742,8 +801,8 @@ mod tests {
 
     #[test]
     fn the_readout_stacks_on_a_vertical_bar_and_lines_up_on_a_horizontal_one() {
-        let (tall_w, tall_h) = bar_size(&[false, false], Along::Vertical);
-        let (wide_w, wide_h) = bar_size(&[false, false], Along::Horizontal);
+        let (tall_w, tall_h) = bar_size(&[running(0), running(0)], Along::Vertical);
+        let (wide_w, wide_h) = bar_size(&[running(0), running(0)], Along::Horizontal);
         // Same two blocks, laid out for a bar that runs the other way: the
         // stacked one is the narrower and the taller of the pair.
         assert!(
@@ -752,7 +811,7 @@ mod tests {
         );
 
         // Two blocks take one more row than one, and one more column.
-        let (one_w, one_h) = bar_size(&[false], Along::Vertical);
+        let (one_w, one_h) = bar_size(&[running(0)], Along::Vertical);
         assert_eq!(tall_w, one_w);
         assert_eq!(tall_h - one_h, CHIP_HEIGHT + BLOCK_GAP);
         assert_eq!(bar_size(&[], Along::Vertical), (one_w, one_h));
@@ -765,18 +824,58 @@ mod tests {
     /// bar runs — and only that block.
     #[test]
     fn a_busy_block_gets_its_second_row() {
-        let (_, resting_h) = bar_size(&[false, false], Along::Vertical);
-        let (_, one_busy_h) = bar_size(&[true, false], Along::Vertical);
-        let (_, both_busy_h) = bar_size(&[true, true], Along::Vertical);
+        let (_, resting_h) = bar_size(&[running(0), running(0)], Along::Vertical);
+        let (_, one_busy_h) = bar_size(&[running(1), running(0)], Along::Vertical);
+        let (_, both_busy_h) = bar_size(&[running(1), running(1)], Along::Vertical);
         assert_eq!(one_busy_h - resting_h, CHIP_HEIGHT + CHIP_GAP);
         assert_eq!(both_busy_h - one_busy_h, CHIP_HEIGHT + CHIP_GAP);
 
         // Side by side, the bar is as tall as its tallest block.
-        let (_, flat_h) = bar_size(&[false, false], Along::Horizontal);
-        let (_, flat_busy_h) = bar_size(&[true, false], Along::Horizontal);
-        let (_, flat_both_h) = bar_size(&[true, true], Along::Horizontal);
+        let (_, flat_h) = bar_size(&[running(0), running(0)], Along::Horizontal);
+        let (_, flat_busy_h) = bar_size(&[running(1), running(0)], Along::Horizontal);
+        let (_, flat_both_h) = bar_size(&[running(1), running(1)], Along::Horizontal);
         assert_eq!(flat_busy_h - flat_h, CHIP_HEIGHT + CHIP_GAP);
         assert_eq!(flat_both_h, flat_busy_h);
+
+        // A finished session earns the second row too — done is a state worth
+        // a line, just not an animated one.
+        let done = AgentTasks {
+            done: 1,
+            ..AgentTasks::default()
+        };
+        let (_, done_h) = bar_size(&[done, running(0)], Along::Vertical);
+        assert_eq!(done_h, one_busy_h);
+    }
+
+    /// The task line widens with its segments: one running session fits under
+    /// the quota line, all three states side by side do not, and the window
+    /// grows to hold whichever block is widest.
+    #[test]
+    fn a_full_task_line_widens_its_block() {
+        assert_eq!(task_line_width(running(0)), 0.0);
+        assert!(task_line_width(running(1)) < DOT + DOT_GAP + VALUE_WIDTH);
+
+        let full = AgentTasks {
+            pending: 1,
+            running: 2,
+            done: 3,
+        };
+        let three_segments = task_line_width(full);
+        assert!(three_segments > DOT + DOT_GAP + VALUE_WIDTH);
+
+        let (narrow_w, _) = bar_size(&[running(1), running(0)], Along::Vertical);
+        let (wide_w, _) = bar_size(&[full, running(0)], Along::Vertical);
+        assert_eq!(narrow_w, PADDING * 2.0 + DOT + DOT_GAP + VALUE_WIDTH);
+        assert_eq!(wide_w, PADDING * 2.0 + three_segments);
+
+        // Ten running sessions cost one more digit's width than nine.
+        assert_eq!(
+            task_line_width(running(10)) - task_line_width(running(9)),
+            TASK_DIGIT
+        );
+
+        // And even the full line fits the user's own 131-pixel bar at 150 %.
+        assert!(wide_w * 1.5 < (VERTICAL.rect.right - VERTICAL.rect.left) as f32);
     }
 
     #[test]

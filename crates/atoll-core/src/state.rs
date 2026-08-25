@@ -473,24 +473,49 @@ impl SessionTable {
         counts
     }
 
-    /// One agent's sessions with something actually going on — running, or
-    /// waiting on the human — and heard from recently enough to believe.
+    /// One agent's live sessions, split the way the taskbar readout shows
+    /// them: blocked on the human, working, and finished.
     ///
-    /// This is the number the taskbar readout shows beside the agent's quota:
-    /// a finished session is not a task, and one that has gone silent past the
-    /// stale window is presumed dead rather than busy.
-    pub fn busy(&self, source: HookSource, now: u64) -> usize {
-        self.sessions
+    /// Only sessions heard from inside the stale window count at all — one
+    /// that has gone silent past it is presumed dead rather than anything.
+    pub fn tasks(&self, source: HookSource, now: u64) -> AgentTasks {
+        let mut tasks = AgentTasks::default();
+        for state in self
+            .sessions
             .values()
             .filter(|state| state.source == source)
             .filter(|state| !state.is_stale(now, self.stale_after_secs))
-            .filter(|state| {
-                matches!(
-                    state.phase,
-                    Phase::Running | Phase::WaitingForApproval | Phase::WaitingForAnswer
-                )
-            })
-            .count()
+        {
+            match state.phase {
+                Phase::WaitingForApproval | Phase::WaitingForAnswer => tasks.pending += 1,
+                Phase::Running => tasks.running += 1,
+                Phase::Completed => tasks.done += 1,
+            }
+        }
+        tasks
+    }
+}
+
+/// One agent's live sessions by state, for the readout's task line.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AgentTasks {
+    /// Blocked on the human — an approval or an answer is outstanding.
+    pub pending: usize,
+    /// Actually working.
+    pub running: usize,
+    /// The turn finished, and the session has not gone away yet.
+    pub done: usize,
+}
+
+impl AgentTasks {
+    /// Sessions with something in motion — what earns an animated dot.
+    pub fn active(&self) -> usize {
+        self.pending + self.running
+    }
+
+    /// Every session worth a line at all.
+    pub fn total(&self) -> usize {
+        self.pending + self.running + self.done
     }
 }
 
@@ -503,11 +528,11 @@ mod tests {
     /// like a plausible instant rather than 0.
     const T0: u64 = 1_787_000_000;
 
-    /// The readout's per-agent task count: running and waiting sessions count,
-    /// finished ones do not, silence past the stale window stops counting, and
-    /// each agent counts only its own.
+    /// The readout's per-agent task line: pending, running, and done sessions
+    /// are each counted by state, silence past the stale window stops a session
+    /// counting at all, and each agent counts only its own.
     #[test]
-    fn busy_counts_one_agents_live_sessions_only() {
+    fn tasks_split_one_agents_live_sessions_by_state() {
         let mut table = SessionTable::new();
         table.apply(
             &table_payload("c-run", events::USER_PROMPT_SUBMIT),
@@ -524,10 +549,21 @@ mod tests {
             T0,
         );
 
-        assert_eq!(table.busy(HookSource::Claude, T0), 2, "running + waiting");
-        assert_eq!(table.busy(HookSource::Codex, T0), 1);
-        assert_eq!(table.busy(HookSource::Claude, T0 + 15 * 60), 0, "stale");
-        assert_eq!(table.busy(HookSource::Codex, T0 + 15 * 60), 0);
+        let claude = table.tasks(HookSource::Claude, T0);
+        assert_eq!(
+            (claude.pending, claude.running, claude.done),
+            (1, 1, 1),
+            "one of each"
+        );
+        assert_eq!(claude.active(), 2);
+        assert_eq!(claude.total(), 3);
+        assert_eq!(table.tasks(HookSource::Codex, T0).running, 1);
+        assert_eq!(
+            table.tasks(HookSource::Claude, T0 + 15 * 60).total(),
+            0,
+            "stale"
+        );
+        assert_eq!(table.tasks(HookSource::Codex, T0 + 15 * 60).total(), 0);
     }
 
     fn payload(raw: Value) -> HookPayload {

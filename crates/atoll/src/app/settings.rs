@@ -8,14 +8,13 @@
 use std::io;
 use std::path::Path;
 
-use atoll_core::install::{self, BridgePolicy, BridgeState, CLAUDE_HOOKS};
+use atoll_core::install::{self, BridgePolicy, CLAUDE_HOOKS};
 
 /// How Claude Code is wired up right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HookStatus {
     pub installed: usize,
     pub total: usize,
-    pub bridge: BridgeState,
 }
 
 impl HookStatus {
@@ -38,26 +37,22 @@ pub fn read_status(settings_path: &Path) -> io::Result<HookStatus> {
     Ok(HookStatus {
         installed: entries.iter().filter(|entry| entry.installed).count(),
         total: CLAUDE_HOOKS.len(),
-        bridge: install::status_bridge(settings_path)?,
     })
 }
 
 /// The line under "Claude Code" in the settings window.
+///
+/// Hooks and nothing else. The status-line bridge is a terminal affair the CLI
+/// still knows how to wire; Atoll's own windows are the tray's, and they do
+/// not mention it.
 pub fn describe(status: &HookStatus) -> String {
-    let hooks = if !status.is_installed() {
+    if !status.is_installed() {
         "Hooks not installed".to_string()
     } else if status.is_complete() {
         format!("{} hooks installed", status.total)
     } else {
         format!("{} of {} hooks installed", status.installed, status.total)
-    };
-    // `BridgeState::Foreign` already reads as a sentence about somebody else's
-    // status line, so it does not take the "usage bridge" prefix the rest do.
-    let bridge = match status.bridge {
-        BridgeState::Foreign => BridgeState::Foreign.as_str().to_string(),
-        state => format!("usage bridge {}", state.as_str()),
-    };
-    format!("{hooks} · {bridge}")
+    }
 }
 
 /// What to say when the configuration cannot be read at all.
@@ -65,33 +60,19 @@ pub fn describe_error(error: &io::Error) -> String {
     format!("Could not read settings.json: {error}")
 }
 
-/// What the settings window asks Atoll to do about `statusLine`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BridgeChoice {
-    /// Leave `statusLine` alone entirely. **The default**, and what Atoll does
-    /// unless the user asks otherwise.
-    Off,
-    /// Install into an empty slot; leave an occupied one alone. Legacy.
-    IfEmpty,
-    /// Wrap an existing status line. Only reachable by the user ticking a box
-    /// that says so.
-    Wrap,
-}
-
 /// Install Atoll's hooks, returning the sentence to show underneath.
-pub fn install(settings_path: &Path, bridge: BridgeChoice) -> io::Result<String> {
+///
+/// Hooks only: `statusLine` is never touched from here. The terminal-side
+/// usage bridge still exists for whoever wants it, but it belongs to the CLI
+/// (`atoll setup install claude`), not to the tray's settings window.
+pub fn install(settings_path: &Path) -> io::Result<String> {
     // A copy of Atoll that no `cargo build` can pull out from under a live
     // session; see `install::install_binaries`.
     let stable = install::install_binaries()?;
 
-    let policy = match bridge {
-        BridgeChoice::Off => BridgePolicy::Skip,
-        BridgeChoice::IfEmpty => BridgePolicy::IfEmpty(stable.atoll.as_path()),
-        BridgeChoice::Wrap => BridgePolicy::Wrap(stable.atoll.as_path()),
-    };
-    let report = install::install_claude(settings_path, &stable.hook, policy)?;
+    let report = install::install_claude(settings_path, &stable.hook, BridgePolicy::Skip)?;
 
-    let mut message = if report.changed {
+    Ok(if report.changed {
         match &report.backup_path {
             Some(backup) => format!(
                 "Installed. Your previous settings.json was backed up to {}.",
@@ -101,13 +82,7 @@ pub fn install(settings_path: &Path, bridge: BridgeChoice) -> io::Result<String>
         }
     } else {
         "Already installed; nothing was written.".to_string()
-    };
-    if report.bridge_left_alone {
-        message.push_str(
-            " Your own status line was left exactly as it is, so Claude Code usage              stays blank — tick \"wrap my status line\" to have Atoll run yours              behind its own.",
-        );
-    }
-    Ok(message)
+    })
 }
 
 /// Remove Atoll's hooks, leaving the user's own alone.
@@ -138,11 +113,7 @@ mod tests {
         assert_eq!(status.installed, 0);
         assert_eq!(status.total, CLAUDE_HOOKS.len());
         assert!(!status.is_installed());
-        assert_eq!(status.bridge, BridgeState::Absent);
-        assert_eq!(
-            describe(&status),
-            "Hooks not installed · usage bridge not installed"
-        );
+        assert_eq!(describe(&status), "Hooks not installed");
     }
 
     #[test]
@@ -158,7 +129,7 @@ mod tests {
         assert!(status.is_installed() && status.is_complete());
         assert_eq!(
             describe(&status),
-            format!("{} hooks installed · usage bridge installed", status.total)
+            format!("{} hooks installed", status.total)
         );
 
         let message = uninstall(&settings).unwrap();
@@ -199,8 +170,11 @@ mod tests {
         );
     }
 
+    /// The status line is a terminal affair the tray's window says nothing
+    /// about: somebody else's `statusLine` must neither change the summary nor
+    /// get in the way of reading the hooks.
     #[test]
-    fn somebody_elses_status_line_is_described_as_theirs() {
+    fn somebody_elses_status_line_is_not_the_windows_business() {
         let dir = scratch();
         let settings = dir.path().join("settings.json");
         std::fs::write(
@@ -210,12 +184,7 @@ mod tests {
         .unwrap();
 
         let status = read_status(&settings).unwrap();
-        assert_eq!(status.bridge, BridgeState::Foreign);
-        assert_eq!(
-            describe(&status),
-            "Hooks not installed · another status line is in place",
-            "the foreign case must read as a sentence, not as a bridge state"
-        );
+        assert_eq!(describe(&status), "Hooks not installed");
     }
 
     #[test]
@@ -225,7 +194,7 @@ mod tests {
         // `install` looks for the hook beside the running test binary, where
         // there is none, so this exercises the guard.
         if install::hook_binary_path().is_ok_and(|path| !path.exists()) {
-            let error = install(&settings, BridgeChoice::Off).unwrap_err();
+            let error = install(&settings).unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::NotFound);
             assert!(
                 !settings.exists(),

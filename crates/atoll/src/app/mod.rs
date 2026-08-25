@@ -49,7 +49,6 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use atoll_core::install::BridgeState;
 use atoll_core::now_unix_secs;
 use atoll_core::protocol::{Envelope, HookSource, Response, events};
 use atoll_core::server::ConnectionHandle;
@@ -145,11 +144,6 @@ struct App {
     /// visible blink a moment after it appears.
     flyout_handle: Cell<Option<isize>>,
     settings_window: RefCell<Option<ui::SettingsWindow>>,
-    /// Whether the next install should also wire up the usage bridge.
-    settings_bridge: Cell<bool>,
-    /// Whether the user has explicitly agreed to Atoll wrapping the status line
-    /// they already have. Never on by default; see [`settings::BridgeChoice`].
-    settings_wrap: Cell<bool>,
     tray: RefCell<Option<Tray>>,
 
     table: RefCell<SessionTable>,
@@ -209,8 +203,6 @@ impl App {
             flyout_open: Cell::new(false),
             flyout_handle: Cell::new(None),
             settings_window: RefCell::new(None),
-            settings_bridge: Cell::new(false),
-            settings_wrap: Cell::new(false),
             tray: RefCell::new(None),
             table: RefCell::new(SessionTable::new()),
             blocked: RefCell::new(HashMap::new()),
@@ -793,12 +785,12 @@ impl App {
                 taskbar::AgentLine {
                     agent: HookSource::Claude,
                     show: config.taskbar.claude,
-                    busy: table.busy(HookSource::Claude, now),
+                    tasks: table.tasks(HookSource::Claude, now),
                 },
                 taskbar::AgentLine {
                     agent: HookSource::Codex,
                     show: config.taskbar.codex,
-                    busy: table.busy(HookSource::Codex, now),
+                    tasks: table.tasks(HookSource::Codex, now),
                 },
             ];
             let (good_at, warn_at) = config.taskbar.thresholds();
@@ -1199,7 +1191,6 @@ impl App {
             return;
         };
         window.set_taskbar_enabled(self.bar.is_shown());
-        window.set_usage_bridge(self.settings_bridge.get());
 
         let app = Rc::downgrade(self);
         window.on_install(move || {
@@ -1211,30 +1202,6 @@ impl App {
         window.on_uninstall(move || {
             if let Some(app) = app.upgrade() {
                 app.run_install(false);
-            }
-        });
-        let app = Rc::downgrade(self);
-        window.on_set_usage_bridge(move |enabled| {
-            if let Some(app) = app.upgrade() {
-                app.settings_bridge.set(enabled);
-                if !enabled {
-                    app.settings_wrap.set(false);
-                    if let Some(window) = app.settings_window.borrow().as_ref() {
-                        window.set_wrap_status_line(false);
-                    }
-                }
-                app.note_settings("The usage bridge is applied the next time you press Install.");
-            }
-        });
-        let app = Rc::downgrade(self);
-        window.on_set_wrap_status_line(move |wrap| {
-            if let Some(app) = app.upgrade() {
-                app.settings_wrap.set(wrap);
-                app.note_settings(if wrap {
-                    "Your status line will be wrapped the next time you press Install.                      Uninstalling puts it back."
-                } else {
-                    "Your status line will be left exactly as it is."
-                });
             }
         });
         let app = Rc::downgrade(self);
@@ -1304,11 +1271,9 @@ impl App {
         // has nothing to install into.
         let claude_present = agent_present(".claude");
         window.set_claude_present(claude_present);
-        window.set_codex_present(agent_present(".codex"));
         if !claude_present {
             window.set_claude_installed(false);
             window.set_claude_status("not found on this machine".into());
-            window.set_status_line_taken(false);
             return;
         }
 
@@ -1318,21 +1283,10 @@ impl App {
             Ok(status) => {
                 window.set_claude_installed(status.is_installed());
                 window.set_claude_status(settings::describe(&status).into());
-                window.set_usage_bridge(status.bridge.is_atoll() || self.settings_bridge.get());
-                // The wrap opt-in only means anything while somebody else's
-                // status line is in the way; once Atoll is wrapping, the choice
-                // has been made and is reflected rather than re-offered.
-                let taken = status.bridge == BridgeState::Foreign;
-                window.set_status_line_taken(taken);
-                if status.bridge == BridgeState::Wrapping {
-                    self.settings_wrap.set(true);
-                }
-                window.set_wrap_status_line(self.settings_wrap.get());
             }
             Err(error) => {
                 window.set_claude_installed(false);
                 window.set_claude_status(settings::describe_error(&error).into());
-                window.set_status_line_taken(false);
             }
         }
     }
@@ -1410,14 +1364,9 @@ impl App {
     }
 
     fn run_install(&self, install: bool) {
-        let choice = match (self.settings_bridge.get(), self.settings_wrap.get()) {
-            (false, _) => settings::BridgeChoice::Off,
-            (true, true) => settings::BridgeChoice::Wrap,
-            (true, false) => settings::BridgeChoice::IfEmpty,
-        };
         let outcome = atoll_core::install::claude_settings_path().and_then(|path| {
             if install {
-                settings::install(&path, choice)
+                settings::install(&path)
             } else {
                 settings::uninstall(&path)
             }

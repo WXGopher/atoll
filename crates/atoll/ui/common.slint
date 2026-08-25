@@ -53,9 +53,12 @@ export struct UsageChip {
     value: string,
     // "good" | "warn" | "low", or "" for the placeholder.
     tier: string,
-    // Live sessions — running, or waiting on the human. Zero hides the
-    // agent's task line.
-    busy: int,
+    // Live sessions by state, one task-line segment per non-zero count.
+    // Pending means blocked on the human; done means the turn finished and
+    // the session has not gone away yet. All zero hides the task line.
+    pending: int,
+    running: int,
+    done: int,
 }
 
 export global Theme {
