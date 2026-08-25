@@ -83,6 +83,15 @@ const MARGIN: i32 = 6;
 /// is never missed between a press and its release, slow enough to be free.
 pub const POINTER_POLL: std::time::Duration = std::time::Duration::from_millis(30);
 
+/// What a click on the readout asks for: the panel, or the context menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Click {
+    /// Left button: open or close the detail panel.
+    Toggle,
+    /// Right button: the Settings / Quit menu.
+    Menu,
+}
+
 /// Which way the taskbar runs, and so which way the chips stack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Along {
@@ -223,10 +232,11 @@ pub struct TaskbarView {
     host: Cell<Option<isize>>,
     /// Whether the embed took. False means the floating fallback.
     embedded: Cell<bool>,
-    /// Whether a press that started on the readout is still held; see the note
-    /// in this module's header about why its input comes from Windows rather
-    /// than from Slint.
-    pressed: Cell<bool>,
+    /// Whether a press that started on the readout is still held, one flag per
+    /// button; see the note in this module's header about why its input comes
+    /// from Windows rather than from Slint.
+    pressed_left: Cell<bool>,
+    pressed_right: Cell<bool>,
     /// Its logical size, from [`bar_size`].
     size: Cell<(f32, f32)>,
     shown: Cell<bool>,
@@ -239,7 +249,8 @@ impl TaskbarView {
             handle: Cell::new(None),
             host: Cell::new(None),
             embedded: Cell::new(false),
-            pressed: Cell::new(false),
+            pressed_left: Cell::new(false),
+            pressed_right: Cell::new(false),
             size: Cell::new(bar_size(2, Along::Vertical)),
             shown: Cell::new(false),
         })
@@ -380,7 +391,8 @@ impl TaskbarView {
         self.embedded.get()
     }
 
-    /// Sample the pointer, and say whether the readout has just been clicked.
+    /// Sample the pointer, and say whether the readout has just been clicked —
+    /// and with which button.
     ///
     /// Called from a timer at [`POINTER_POLL`]. See this module's header for
     /// why the readout's clicks are read from Windows rather than delivered by
@@ -390,24 +402,52 @@ impl TaskbarView {
     /// the button goes down — `WindowFromPoint`, so a window on top of it takes
     /// the click as it should. The release is the click wherever the pointer
     /// has wandered to by then, the way a taskbar button treats one.
-    pub fn poll_click(&self) -> bool {
-        let down = win::left_button_down();
-        match (down, self.pressed.get()) {
+    pub fn poll_click(&self) -> Option<Click> {
+        let left = Self::poll_button(&self.pressed_left, win::left_button_down(), || {
+            self.under_pointer()
+        });
+        let right = Self::poll_button(&self.pressed_right, win::right_button_down(), || {
+            self.under_pointer()
+        });
+        if left {
+            Some(Click::Toggle)
+        } else if right {
+            Some(Click::Menu)
+        } else {
+            None
+        }
+    }
+
+    /// One button's press-and-release tracking: `true` exactly once, on the
+    /// release of a press that began over the readout.
+    fn poll_button(pressed: &Cell<bool>, down: bool, over_readout: impl Fn() -> bool) -> bool {
+        match (down, pressed.get()) {
             (true, false) => {
-                if let Some((x, y)) = win::cursor_position() {
-                    let ours = self.handle.get();
-                    if ours.is_some() && win::window_at(x, y) == ours {
-                        self.pressed.set(true);
-                    }
+                if over_readout() {
+                    pressed.set(true);
                 }
                 false
             }
             (false, true) => {
-                self.pressed.set(false);
+                pressed.set(false);
                 true
             }
             _ => false,
         }
+    }
+
+    /// Whether the pointer is over the readout's own window right now.
+    fn under_pointer(&self) -> bool {
+        let Some((x, y)) = win::cursor_position() else {
+            return false;
+        };
+        let ours = self.handle.get();
+        ours.is_some() && win::window_at(x, y) == ours
+    }
+
+    /// The readout's native window, once the event loop has created it.
+    pub fn window_handle(&self) -> Option<isize> {
+        self.handle.get()
     }
 
     /// The readout's offset inside `taskbar`: stacked just clear of the

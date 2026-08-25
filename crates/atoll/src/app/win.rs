@@ -7,7 +7,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
     HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, ScreenToClient,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON};
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{BOOL, PCWSTR};
 
@@ -33,6 +33,57 @@ pub fn left_button_down() -> bool {
     // The high bit is "down now"; the low bit is "was pressed since last asked"
     // and is deliberately ignored — this is a level, not an edge.
     unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000 != 0 }
+}
+
+/// As [`left_button_down`], for the right button.
+pub fn right_button_down() -> bool {
+    unsafe { GetAsyncKeyState(VK_RBUTTON.0 as i32) as u16 & 0x8000 != 0 }
+}
+
+/// A native context menu at the cursor, blocking until the user picks or
+/// dismisses. Returns the index into `labels` of the pick; a `"-"` label is a
+/// separator, which occupies an index but can never be returned.
+///
+/// Native rather than a Slint window because that is what a context menu on a
+/// taskbar control is: it dismisses when the user clicks anywhere else, it
+/// clips nowhere, and it matches the tray icon's own menu exactly.
+pub fn popup_menu(owner: isize, labels: &[&str]) -> Option<usize> {
+    let window = hwnd(owner);
+    unsafe {
+        let menu = CreatePopupMenu().ok()?;
+        for (index, label) in labels.iter().enumerate() {
+            let appended = if *label == "-" {
+                AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null())
+            } else {
+                let wide: Vec<u16> = label.encode_utf16().chain(std::iter::once(0)).collect();
+                AppendMenuW(menu, MF_STRING, index + 1, PCWSTR(wide.as_ptr()))
+            };
+            if appended.is_err() {
+                let _ = DestroyMenu(menu);
+                return None;
+            }
+        }
+
+        // Without foreground status the menu refuses to dismiss on an outside
+        // click; the WM_NULL afterwards is the other half of the same folklore,
+        // and both are what the shell itself does for tray menus.
+        let _ = SetForegroundWindow(window);
+        let (x, y) = cursor_position().unwrap_or((0, 0));
+        let picked = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
+            x,
+            y,
+            None,
+            window,
+            None,
+        );
+        let _ = DestroyMenu(menu);
+        let _ = PostMessageW(Some(window), WM_NULL, Default::default(), Default::default());
+
+        let id = picked.0 as usize;
+        if id == 0 { None } else { Some(id - 1) }
+    }
 }
 
 /// The window under a screen point, or `None` if there is none.

@@ -46,7 +46,7 @@ impl Tray {
     /// only once that loop has started.
     pub fn new(icon_size: u32) -> Result<Self, String> {
         let menu = Menu::new();
-        let setup_item = MenuItem::with_id(ID_SETUP, "Setup…", true, None);
+        let setup_item = MenuItem::with_id(ID_SETUP, "Settings…", true, None);
         let quit_item = MenuItem::with_id(ID_QUIT, "Quit Atoll", true, None);
         menu.append_items(&[&setup_item, &PredefinedMenuItem::separator(), &quit_item])
             .map_err(|error| error.to_string())?;

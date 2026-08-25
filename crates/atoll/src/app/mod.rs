@@ -429,11 +429,30 @@ impl App {
                 if !app.bar.is_shown() {
                     return;
                 }
-                if app.bar.poll_click() {
-                    app.toggle_flyout_beside_bar();
+                match app.bar.poll_click() {
+                    Some(taskbar::Click::Toggle) => app.toggle_flyout_beside_bar(),
+                    Some(taskbar::Click::Menu) => app.readout_menu(),
+                    None => {}
                 }
             },
         );
+    }
+
+    /// The readout's right-click menu: the same two commands the tray offers,
+    /// in the same words. A native menu, so it dismisses like every other
+    /// taskbar menu and never fights the panel for space.
+    fn readout_menu(self: &Rc<Self>) {
+        let Some(handle) = self.bar.window_handle() else {
+            return;
+        };
+        match win::popup_menu(handle, &["Settings…", "-", "Quit Atoll"]) {
+            Some(0) => self.open_settings(),
+            Some(2) => {
+                self.close_flyout();
+                slint::quit_event_loop().ok();
+            }
+            _ => {}
+        }
     }
 
     // -------------------------------------------------------------- events
