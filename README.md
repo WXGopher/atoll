@@ -25,8 +25,8 @@ the time.
 
 Early development, but usable for Claude Code: the taskbar readout runs,
 approvals and `AskUserQuestion` answers go back to a live session from the card,
-and both agents' rate-limit windows are shown. Codex hook installation and
-jumping back to a session's terminal are not done yet.
+a click on a session row brings its terminal window forward, and both agents'
+rate-limit windows are shown. Codex hook installation is not done yet.
 
 ## What it looks like
 
@@ -41,7 +41,9 @@ a quiet check for the ones done:
 **The detail panel** — click the readout: every session Atoll is tracking, and
 every rate-limit window both agents have reported, each with a bar you can read
 at a glance rather than a sentence you have to parse. The same panel opens from
-the tray icon.
+the tray icon. Click a session's row and the terminal window that owns it comes
+to the front — the right window, even with several Windows Terminal windows
+open, and VS Code's integrated terminal too.
 
 <img src="docs/panel.png" width="400" alt="The detail panel">
 
@@ -70,6 +72,12 @@ without going back to the terminal:
 - **Approval cards** — tool calls your own settings already allow never raise a
   card, a card you have seen collapses on its own, and there is no window at
   all when nothing is being asked. Drag one somewhere better and it remembers.
+- **Jump back to the session** — a click on a panel row brings the terminal
+  window that owns the session to the front. The hook reports which process
+  spawned it, and Atoll follows the process ancestry to the window at click
+  time — so with several Windows Terminal windows open, the session's own
+  window is the one that rises. Rows whose terminal is unknown draw no
+  affordance and eat no clicks.
 - **One Atoll at a time** — starting Atoll replaces whatever Atoll is already
   running rather than refusing to start, so a shortcut double-clicked twice, or
   a freshly built binary, never leaves two of them fighting over the pipe.
@@ -120,9 +128,8 @@ own alone. `atoll headless` runs the same pipe server with no windows at all and
 prints the event stream, which is the first place to look when something is not
 arriving.
 
-Planned: Codex hook installation, jumping back to Windows Terminal or VS Code,
-and toast notifications — the working list lives in
-[docs/ROADMAP.md](docs/ROADMAP.md).
+Planned: a hover peek on the readout, Codex hook installation, and toast
+notifications — the working list lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ### Your configuration is only ever added to
 

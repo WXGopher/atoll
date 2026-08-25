@@ -35,12 +35,25 @@ order is closer to "what is worth doing" than to "what happens first".
   workflow on GitHub's own runners, each with its SHA-256 and a signed build
   provenance attestation tying it to the commit and workflow run that produced
   it.
+- **Jumping back to a session's terminal.** A session row in the panel is a
+  door: click it and the terminal window that owns the session comes to the
+  front. The hook sends its parent pid — the agent CLI, which lives as long as
+  the session — and at click time Atoll walks the process ancestry from there
+  to the first ancestor with a real window. Windows Terminal keeps one process
+  per window, so with several open the walk lands on the right one; VS Code's
+  integrated terminal resolves through the pty host the same way. Rows whose
+  terminal is unknown draw no affordance and eat no clicks.
 
 ## Next: platform work
 
-The three things the README calls planned, in roughly the order they are likely
+The things the README calls planned, in roughly the order they are likely
 to land.
 
+- **Hover peek on the readout.** Hovering the readout for a beat opens a
+  compact card listing only the sessions waiting on the human, and it goes
+  away when the pointer does, without ever taking focus. Same FlyoutWindow in
+  a compact mode — not a new window class — and the hover detection rides the
+  Windows polling the readout already runs for its clicks.
 - **Codex hook installation.** `atoll setup install codex` currently fails with
   "not implemented yet". What it needs is `~/.codex/config.toml` and its hooks
   file, wired with the same add-only, take-back-exactly-what-was-added
@@ -48,14 +61,6 @@ to land.
   through the rollout files Atoll reads anyway, which is enough for rate limits
   and nothing else, and the settings page says "coming soon" beside a Codex it
   can already see on the machine.
-- **Jumping back to a session's terminal.** The wire already carries most of
-  what this needs: the hook forwards the terminal environment variables it can
-  see, along with its own process id, on every event. What is missing is walking
-  the parent chain from the hook to the window that owns it when those variables
-  are not enough to identify it, and then bringing that window forward —
-  Windows Terminal and VS Code first. The panel's session rows are deliberately
-  read-only until that exists, because a row that looks clickable and does
-  nothing is worse than a row that does not.
 - **Toast notifications.** A card appears when a session wants an answer.
   Nothing appears when a long run finishes with nothing to ask, which is the
   other moment worth interrupting somebody for. This wants a toast, and a switch
@@ -105,3 +110,8 @@ suspicion that it might be wrong.
 - **The bring-up log stamps events in UTC.** Local time needs either a date-time
   dependency or a `GetLocalTime` call, and neither has been worth it for a log
   that is only read while something is broken.
+- **The jump lands on the window, not the tab.** With several tabs in one
+  Windows Terminal window the right window comes forward showing whatever tab
+  it had up. Selecting the session's own tab means UI Automation against tab
+  titles that shells rewrite at will — worth doing only if the window-level
+  jump turns out to not be enough in practice.

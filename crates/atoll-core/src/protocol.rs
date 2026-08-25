@@ -176,8 +176,14 @@ impl HookPayload {
 pub struct TerminalMeta {
     /// The subset of [`TERMINAL_ENV_VARS`] that was actually set.
     pub env: Map<String, Value>,
-    /// PID of the hook process, a starting point for walking the parent chain.
+    /// PID of the hook process. Useless by the time anyone clicks — the hook
+    /// exits within milliseconds — but kept on the wire for diagnostics.
     pub hook_pid: u32,
+    /// PID of the hook's parent: the agent CLI, which lives as long as the
+    /// session does. This is the anchor for walking the process ancestry to
+    /// the terminal window that owns the session, at click time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_pid: Option<u32>,
 }
 
 /// Hook event names Atoll knows about.
@@ -720,15 +726,34 @@ mod tests {
         let mut payload = HookPayload::default();
         let mut env = Map::new();
         env.insert("WT_SESSION".into(), Value::String("guid".into()));
-        payload.set_terminal_meta(TerminalMeta { env, hook_pid: 42 });
+        payload.set_terminal_meta(TerminalMeta {
+            env,
+            hook_pid: 42,
+            parent_pid: Some(41),
+        });
 
         let encoded = serde_json::to_string(&payload).unwrap();
         assert!(encoded.contains(r#""atollTerminal""#));
+        assert!(encoded.contains(r#""parentPid":41"#));
 
         let decoded: HookPayload = serde_json::from_str(&encoded).unwrap();
         let meta = decoded.terminal_meta().unwrap();
         assert_eq!(meta.hook_pid, 42);
+        assert_eq!(meta.parent_pid, Some(41));
         assert_eq!(meta.env["WT_SESSION"], Value::String("guid".into()));
+    }
+
+    #[test]
+    fn terminal_meta_from_an_older_hook_still_parses() {
+        // A hook built before parentPid existed sends meta without it; the
+        // session must simply come out not jumpable, not fail to parse.
+        let raw = serde_json::json!({
+            "atollTerminal": {"env": {}, "hookPid": 7}
+        });
+        let payload: HookPayload = serde_json::from_value(raw).unwrap();
+        let meta = payload.terminal_meta().unwrap();
+        assert_eq!(meta.hook_pid, 7);
+        assert_eq!(meta.parent_pid, None);
     }
 
     #[test]

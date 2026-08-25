@@ -17,6 +17,10 @@ export struct SessionRow {
     phase: string,
     // "claude" | "codex"
     source: string,
+    // Whether a click on this row can reach the terminal that owns the
+    // session. Rows without a known terminal draw no affordance and eat no
+    // clicks.
+    jumpable: bool,
 }
 
 // One line of the detail panel's usage block.

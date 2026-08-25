@@ -126,10 +126,73 @@ fn collect_terminal_meta() -> TerminalMeta {
     }
     TerminalMeta {
         env,
-        // TODO(M4): walk the parent chain from here to find the owning terminal
-        // window when the env vars alone are not enough.
         hook_pid: std::process::id(),
+        // The parent is the agent CLI, which outlives this hook by the whole
+        // session. The app walks the rest of the ancestry at click time, when
+        // somebody actually asks to jump back to the terminal.
+        parent_pid: parent_pid(),
     }
+}
+
+/// PID of this process's parent, from `NtQueryInformationProcess`.
+///
+/// One syscall on the pseudo-handle: no snapshot, no allocation, and no new
+/// dependency, which matters in a binary that runs on every hook event. The
+/// parent may already be gone by the time anyone reads this — PID reuse is the
+/// reader's problem, and the reader guards against it by only ever activating
+/// windows owned by processes that look like terminals.
+#[cfg(windows)]
+fn parent_pid() -> Option<u32> {
+    #[repr(C)]
+    struct ProcessBasicInformation {
+        exit_status: isize,
+        peb_base_address: *mut core::ffi::c_void,
+        affinity_mask: usize,
+        base_priority: isize,
+        unique_process_id: usize,
+        inherited_from_unique_process_id: usize,
+    }
+
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn NtQueryInformationProcess(
+            process: isize,
+            class: u32,
+            info: *mut core::ffi::c_void,
+            len: u32,
+            written: *mut u32,
+        ) -> i32;
+    }
+
+    // GetCurrentProcess() without linking kernel32 declarations: the
+    // documented pseudo-handle value.
+    const CURRENT_PROCESS: isize = -1;
+    const PROCESS_BASIC_INFORMATION_CLASS: u32 = 0;
+
+    let mut info = ProcessBasicInformation {
+        exit_status: 0,
+        peb_base_address: std::ptr::null_mut(),
+        affinity_mask: 0,
+        base_priority: 0,
+        unique_process_id: 0,
+        inherited_from_unique_process_id: 0,
+    };
+    let mut written = 0u32;
+    let status = unsafe {
+        NtQueryInformationProcess(
+            CURRENT_PROCESS,
+            PROCESS_BASIC_INFORMATION_CLASS,
+            (&raw mut info).cast(),
+            size_of::<ProcessBasicInformation>() as u32,
+            &raw mut written,
+        )
+    };
+    (status == 0).then(|| u32::try_from(info.inherited_from_unique_process_id).ok())?
+}
+
+#[cfg(not(windows))]
+fn parent_pid() -> Option<u32> {
+    None
 }
 
 /// Connect, send `line`, and — when `wait_budget` is set — wait that long for a
@@ -199,5 +262,29 @@ fn decision_stdout(reply: &str) -> Option<String> {
         } => Some(decision.to_stdout_json()),
         // Ack / Error / anything else: the app explicitly declined to decide.
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn parent_pid_answers_with_a_real_process() {
+        // This test process was spawned by the test runner, so the syscall
+        // must find a parent — a real pid, not a system sentinel.
+        let parent = parent_pid().expect("a parent pid");
+        assert!(parent > 4);
+        assert_ne!(parent, std::process::id());
+    }
+
+    #[test]
+    fn terminal_meta_carries_the_parent() {
+        let meta = collect_terminal_meta();
+        assert_eq!(meta.hook_pid, std::process::id());
+        if cfg!(windows) {
+            assert!(meta.parent_pid.is_some());
+        }
     }
 }

@@ -246,6 +246,7 @@ impl App {
         self.refresh();
         self.migrate_startup_shortcut();
 
+        self.wire_flyout();
         self.start_adopting();
         self.start_watching_the_readout();
         self.start_ticking();
@@ -635,6 +636,38 @@ impl App {
         self.refresh();
     }
 
+    /// Connect the flyout's one interaction: a click on a session row brings
+    /// that session's terminal window to the front.
+    fn wire_flyout(self: &Rc<Self>) {
+        let app = Rc::downgrade(self);
+        self.flyout.on_jump(move |id| {
+            if let Some(app) = app.upgrade() {
+                app.jump(id.as_str());
+            }
+        });
+    }
+
+    /// Jump back to the terminal that owns a session.
+    ///
+    /// The anchor is the agent CLI's pid, captured by the hook as its own
+    /// parent; the rest of the ancestry is resolved now rather than at event
+    /// time, because it is cheap and because resolving late survives anything
+    /// that happened to the process tree in between. Closing the flyout only
+    /// on success keeps the panel around to try another row when a terminal
+    /// has quietly gone away.
+    fn jump(self: &Rc<Self>, session_id: &str) {
+        let target = self
+            .table
+            .borrow()
+            .get(session_id)
+            .and_then(|state| state.terminal.as_ref())
+            .and_then(|terminal| terminal.parent_pid);
+        let Some(pid) = target else { return };
+        if win::activate_terminal_of(pid) {
+            self.close_flyout();
+        }
+    }
+
     fn decide(self: &Rc<Self>, allow: bool) {
         let Some(card) = self.current.borrow().clone() else {
             return;
@@ -837,6 +870,11 @@ impl App {
                     detail: describe_phase(state.phase, state.current_tool()).into(),
                     phase: state.phase.as_str().into(),
                     source: state.source.as_str().into(),
+                    jumpable: state
+                        .terminal
+                        .as_ref()
+                        .and_then(|terminal| terminal.parent_pid)
+                        .is_some(),
                 }
             })
             .collect()

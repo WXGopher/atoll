@@ -3,9 +3,14 @@
 //! Everything here takes and returns plain integers so the rest of the app never
 //! has to name a `HWND`.
 
+use std::collections::HashMap;
+
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
     HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, ScreenToClient,
+};
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::Registry::{
     HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW,
@@ -501,5 +506,222 @@ pub fn local_offset_secs() -> i64 {
 pub fn detach_console() {
     unsafe {
         let _ = windows::Win32::System::Console::FreeConsole();
+    }
+}
+
+/// One process, as the ancestry walk sees it: who spawned it, and what it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProcessInfo {
+    pub parent: u32,
+    /// Executable file name only, lowercased: `"windowsterminal.exe"`.
+    pub exe: String,
+}
+
+/// Bring the terminal window that owns a session to the foreground.
+///
+/// `cli_pid` is the agent CLI's process id, captured by the hook (its own
+/// parent) and alive as long as the session is. The walk goes upward from
+/// there: for a Windows Terminal tab the shell's parent is exactly the
+/// `WindowsTerminal.exe` process hosting that tab's window — each window is its
+/// own process — which is what makes this pick the right window when several
+/// are open. VS Code's integrated terminal resolves the same way, through the
+/// windowless pty host to the main `Code.exe`.
+///
+/// Returns false when the chain leads to no window: the terminal is gone, the
+/// PID was reused, or the session never had one.
+pub fn activate_terminal_of(cli_pid: u32) -> bool {
+    let table = process_table();
+    for pid in terminal_ancestors(&table, cli_pid, std::process::id()) {
+        if let Some(window) = main_window_of(pid) {
+            return activate(window);
+        }
+    }
+    false
+}
+
+/// The ancestors of `start` worth asking for a window, nearest first,
+/// `start` itself included.
+///
+/// The walk stops at `explorer.exe` without including it: the shell is
+/// everyone's ancestor and owns the desktop and the taskbar, so matching it
+/// would "jump" to the wrong window with great confidence. The visited set
+/// guards against the parent cycles PID reuse can manufacture.
+pub(crate) fn terminal_ancestors(
+    table: &HashMap<u32, ProcessInfo>,
+    start: u32,
+    self_pid: u32,
+) -> Vec<u32> {
+    let mut chain = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut current = start;
+    for _ in 0..16 {
+        if current <= 4 || current == self_pid || !seen.insert(current) {
+            break;
+        }
+        let Some(info) = table.get(&current) else {
+            break;
+        };
+        if info.exe == "explorer.exe" {
+            break;
+        }
+        chain.push(current);
+        current = info.parent;
+    }
+    chain
+}
+
+/// Every live process's parent and executable name, from one Toolhelp
+/// snapshot — a consistent point-in-time view of the process tree.
+fn process_table() -> HashMap<u32, ProcessInfo> {
+    let mut table = HashMap::new();
+    let Ok(snapshot) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) else {
+        return table;
+    };
+    let mut entry = PROCESSENTRY32W {
+        dwSize: size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    if unsafe { Process32FirstW(snapshot, &mut entry) }.is_ok() {
+        loop {
+            let len = entry
+                .szExeFile
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(entry.szExeFile.len());
+            table.insert(
+                entry.th32ProcessID,
+                ProcessInfo {
+                    parent: entry.th32ParentProcessID,
+                    exe: String::from_utf16_lossy(&entry.szExeFile[..len]).to_lowercase(),
+                },
+            );
+            if unsafe { Process32NextW(snapshot, &mut entry) }.is_err() {
+                break;
+            }
+        }
+    }
+    unsafe {
+        let _ = windows::Win32::Foundation::CloseHandle(snapshot);
+    }
+    table
+}
+
+struct FindMainWindow {
+    process: u32,
+    found: HWND,
+}
+
+unsafe extern "system" fn match_main_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let context = unsafe { &mut *(lparam.0 as *mut FindMainWindow) };
+    let mut process = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process)) };
+    if process != context.process {
+        return BOOL(1);
+    }
+    // The window somebody would call "the app": visible, unowned, not a tool
+    // window, and titled. Terminal hosts stand up invisible helper windows
+    // too, and those fail one of these four.
+    if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
+        return BOOL(1);
+    }
+    if unsafe { GetWindow(hwnd, GW_OWNER) }.is_ok() {
+        return BOOL(1);
+    }
+    let style = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) } as u32;
+    if style & WS_EX_TOOLWINDOW.0 != 0 {
+        return BOOL(1);
+    }
+    let mut buffer = [0u16; 8];
+    if unsafe { GetWindowTextW(hwnd, &mut buffer) } <= 0 {
+        return BOOL(1);
+    }
+    context.found = hwnd;
+    BOOL(0)
+}
+
+/// The visible top-level window a process would call its main one, if any.
+fn main_window_of(pid: u32) -> Option<isize> {
+    let mut context = FindMainWindow {
+        process: pid,
+        found: HWND(std::ptr::null_mut()),
+    };
+    unsafe {
+        let _ = EnumWindows(Some(match_main_window), LPARAM(&mut context as *mut _ as isize));
+    }
+    (!context.found.0.is_null()).then_some(context.found.0 as isize)
+}
+
+/// Restore if minimized, then bring to the foreground.
+///
+/// This runs from a click on Atoll's own focused flyout, so this process holds
+/// the foreground and `SetForegroundWindow` is permitted to hand it over — the
+/// one situation Windows lets a window be raised without tricks.
+fn activate(handle: isize) -> bool {
+    let window = hwnd(handle);
+    unsafe {
+        if IsIconic(window).as_bool() {
+            let _ = ShowWindow(window, SW_RESTORE);
+        }
+        SetForegroundWindow(window).as_bool()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ProcessInfo, terminal_ancestors};
+    use std::collections::HashMap;
+
+    fn table(entries: &[(u32, u32, &str)]) -> HashMap<u32, ProcessInfo> {
+        entries
+            .iter()
+            .map(|&(pid, parent, exe)| {
+                (
+                    pid,
+                    ProcessInfo {
+                        parent,
+                        exe: exe.to_string(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_walk_climbs_from_the_cli_to_the_terminal_host() {
+        // claude(node) <- pwsh <- WindowsTerminal <- explorer.
+        let table = table(&[
+            (100, 90, "node.exe"),
+            (90, 80, "pwsh.exe"),
+            (80, 70, "windowsterminal.exe"),
+            (70, 4, "explorer.exe"),
+        ]);
+        assert_eq!(terminal_ancestors(&table, 100, 9999), vec![100, 90, 80]);
+    }
+
+    #[test]
+    fn explorer_is_never_a_candidate() {
+        let table = table(&[(100, 70, "pwsh.exe"), (70, 4, "explorer.exe")]);
+        assert_eq!(terminal_ancestors(&table, 100, 9999), vec![100]);
+    }
+
+    #[test]
+    fn a_parent_cycle_from_pid_reuse_terminates() {
+        let table = table(&[(100, 90, "node.exe"), (90, 100, "pwsh.exe")]);
+        assert_eq!(terminal_ancestors(&table, 100, 9999), vec![100, 90]);
+    }
+
+    #[test]
+    fn a_dead_parent_just_ends_the_chain() {
+        let table = table(&[(100, 90, "node.exe")]);
+        assert_eq!(terminal_ancestors(&table, 100, 9999), vec![100]);
+    }
+
+    #[test]
+    fn atoll_itself_and_system_pids_are_skipped() {
+        let table = table(&[(100, 50, "node.exe"), (50, 4, "atoll.exe")]);
+        // 50 is "us" here: the chain must not offer our own windows.
+        assert_eq!(terminal_ancestors(&table, 100, 50), vec![100]);
+        // And a chain that starts at a system pid offers nothing at all.
+        assert_eq!(terminal_ancestors(&table, 4, 50), Vec::<u32>::new());
     }
 }

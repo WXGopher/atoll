@@ -7,8 +7,10 @@ import { Theme, SessionRow, SessionBlock, UsageRow, UsageBar, AgentMark } from "
 // each time, because "what is going on right now" is one question however it
 // is asked.
 //
-// Read-only for now. Jumping back to a session's terminal is M4; until that
-// exists a row that looked clickable would be a lie.
+// A session row whose terminal is known is a door: click it and that terminal
+// window comes to the front. Rows without one stay inert and draw no
+// affordance, because a row that looks clickable and does nothing is worse
+// than a row that does not.
 export component FlyoutWindow inherits Window {
     title: "Atoll Sessions";
     no-frame: true;
@@ -16,6 +18,8 @@ export component FlyoutWindow inherits Window {
     background: transparent;
 
     in property <[SessionRow]> sessions;
+    // A click on a jumpable session row, carrying the session's id.
+    callback jump(string);
     // A heading row per agent, then one row per rate-limit window. Built by
     // Rust; see `app::detail_rows`.
     in property <[UsageRow]> usage-rows;
@@ -62,35 +66,75 @@ export component FlyoutWindow inherits Window {
 
             VerticalLayout {
                 spacing: 9px;
-                for session in root.sessions: HorizontalLayout {
-                    spacing: 10px;
+                for session in root.sessions: Rectangle {
                     height: 32px;
+                    border-radius: 6px;
+                    background: session.jumpable && touch.has-hover
+                        ? Theme.soft
+                        : transparent;
+                    animate background { duration: 120ms; }
 
-                    Rectangle {
-                        width: 10px;
-                        SessionBlock {
-                            y: 11px;
-                            size: 10px;
-                            phase: session.phase;
-                            source: session.source;
-                            pulse: root.pulse;
+                    touch := TouchArea {
+                        mouse-cursor: session.jumpable ? pointer : default;
+                        clicked => {
+                            if (session.jumpable) {
+                                root.jump(session.id);
+                            }
                         }
                     }
 
-                    VerticalLayout {
-                        spacing: 2px;
-                        alignment: center;
-                        Text {
-                            text: session.title;
-                            color: Theme.text;
-                            font-size: 12px;
-                            overflow: elide;
+                    HorizontalLayout {
+                        spacing: 10px;
+
+                        Rectangle {
+                            width: 10px;
+                            SessionBlock {
+                                y: 11px;
+                                size: 10px;
+                                phase: session.phase;
+                                source: session.source;
+                                pulse: root.pulse;
+                            }
                         }
-                        Text {
-                            text: session.detail;
-                            color: Theme.faint;
-                            font-size: 11px;
-                            overflow: elide;
+
+                        VerticalLayout {
+                            spacing: 2px;
+                            alignment: center;
+                            Text {
+                                text: session.title;
+                                color: Theme.text;
+                                font-size: 12px;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: session.detail;
+                                // Waiting on the human keeps its amber even
+                                // here, so the row that wants a click looks
+                                // like it.
+                                color: session.phase == "waitingForApproval" || session.phase == "waitingForAnswer"
+                                    ? Theme.thin
+                                    : Theme.faint;
+                                font-size: 11px;
+                                overflow: elide;
+                            }
+                        }
+
+                        // The door's handle: an arrow that brightens under the
+                        // pointer. Only drawn when the jump can actually work.
+                        if session.jumpable: Rectangle {
+                            width: 13px;
+                            horizontal-stretch: 0;
+                            Path {
+                                y: (parent.height - 11px) / 2;
+                                width: 11px;
+                                height: 11px;
+                                viewbox-width: 12;
+                                viewbox-height: 12;
+                                stroke: touch.has-hover ? Theme.body-text : Theme.faint;
+                                stroke-width: 1.5px;
+                                opacity: touch.has-hover ? 1.0 : 0.55;
+                                commands: "M 3 9 L 9 3 M 4.5 3 L 9 3 L 9 7.5";
+                            }
                         }
                     }
                 }
