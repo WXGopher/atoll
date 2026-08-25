@@ -522,7 +522,10 @@ pub fn detach_console() {
 ///
 /// Returns false when nothing in the chain still has a window: the terminal
 /// is gone, or the session predates the ancestry-carrying hook.
-pub fn activate_terminal_from(ancestors: &[atoll_core::protocol::ProcessRef]) -> bool {
+pub fn activate_terminal_from(
+    ancestors: &[atoll_core::protocol::ProcessRef],
+    tab_hint: Option<&str>,
+) -> bool {
     let alive = process_exes();
     let candidates = live_candidates(&alive, ancestors, std::process::id());
     if candidates.is_empty() {
@@ -534,17 +537,137 @@ pub fn activate_terminal_from(ancestors: &[atoll_core::protocol::ProcessRef]) ->
             crate::util::debug_log(&format!("jump: {pid} alive but windowless, next"));
             continue;
         };
+        let exe = alive.get(&pid).map(String::as_str).unwrap_or("?");
         let activated = activate(window);
         crate::util::debug_log(&format!(
-            "jump: {pid} ({}) window \"{}\" -> {}",
-            alive.get(&pid).map(String::as_str).unwrap_or("?"),
+            "jump: {pid} ({exe}) window \"{}\" -> {}",
             title_of(window),
             if activated { "activated" } else { "foreground refused" },
         ));
+        // The window is up; in a tabbed terminal the session may still be
+        // behind another tab. Best-effort, and only ever after a successful
+        // activation: a tab flipped in a background window would be spooky.
+        if activated
+            && exe == "windowsterminal.exe"
+            && let Some(hint) = tab_hint
+        {
+            select_terminal_tab(window, hint);
+        }
         return activated;
     }
     crate::util::debug_log("jump: chain alive but nobody owns a window");
     false
+}
+
+/// Put the tab whose title matches `hint` in front, via UI Automation.
+///
+/// Windows Terminal exposes its tab strip as UIA tab items whose names are
+/// the tab titles, and Claude Code titles its tab after the task it is on —
+/// the same summary Atoll's session row shows. Best-effort by design: no
+/// match, an ambiguous match, or UIA failing outright all leave the window
+/// showing whatever tab it had, which is where window-level activation left
+/// things anyway. Every outcome is logged.
+fn select_terminal_tab(window: isize, hint: &str) {
+    use windows::Win32::System::Com::{
+        CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+    };
+    use windows::Win32::System::Variant::{VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_I4};
+    use windows::Win32::UI::Accessibility::{
+        CUIAutomation, IUIAutomation, IUIAutomationSelectionItemPattern, TreeScope_Descendants,
+        UIA_SelectionItemPatternId, UIA_TabItemControlTypeId, UIA_ControlTypePropertyId,
+    };
+    use windows::core::Interface;
+
+    // An i32 VARIANT by hand: the crate ships no constructor, and VT_I4 holds
+    // nothing that needs freeing.
+    let tab_item_type = VARIANT {
+        Anonymous: VARIANT_0 {
+            Anonymous: std::mem::ManuallyDrop::new(VARIANT_0_0 {
+                vt: VT_I4,
+                wReserved1: 0,
+                wReserved2: 0,
+                wReserved3: 0,
+                Anonymous: VARIANT_0_0_0 {
+                    lVal: UIA_TabItemControlTypeId.0,
+                },
+            }),
+        },
+    };
+
+    let result: windows::core::Result<()> = (|| {
+        unsafe {
+            // S_FALSE ("already initialized") is success; RPC_E_CHANGED_MODE
+            // means the thread is already in the other apartment, which UIA
+            // tolerates too — so the return value is deliberately ignored.
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let automation: IUIAutomation =
+                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?;
+            let root = automation.ElementFromHandle(hwnd(window))?;
+            let condition =
+                automation.CreatePropertyCondition(UIA_ControlTypePropertyId, &tab_item_type)?;
+            let tabs = root.FindAll(TreeScope_Descendants, &condition)?;
+            let count = tabs.Length()?;
+            let mut names = Vec::with_capacity(count as usize);
+            for index in 0..count {
+                names.push(tabs.GetElement(index)?.CurrentName()?.to_string());
+            }
+            let Some(picked) = pick_tab(&names, hint) else {
+                crate::util::debug_log(&format!(
+                    "jump: no tab matched \"{hint}\" among {names:?}"
+                ));
+                return Ok(());
+            };
+            let pattern: IUIAutomationSelectionItemPattern = tabs
+                .GetElement(picked as i32)?
+                .GetCurrentPattern(UIA_SelectionItemPatternId)?
+                .cast()?;
+            pattern.Select()?;
+            crate::util::debug_log(&format!("jump: tab \"{}\" selected", names[picked]));
+            Ok(())
+        }
+    })();
+    if let Err(error) = result {
+        crate::util::debug_log(&format!("jump: tab selection failed: {error}"));
+    }
+}
+
+/// The index of the one tab that matches `hint`, if exactly one does.
+///
+/// Titles on both sides are messy — Claude Code prefixes its tab title with a
+/// status glyph, the session summary may be a truncation — so matching is by
+/// normalized containment either way. Two candidates and no exact tie-break
+/// mean no answer: flipping to the wrong tab is worse than staying put.
+pub(crate) fn pick_tab(names: &[String], hint: &str) -> Option<usize> {
+    fn normalize(text: &str) -> String {
+        text.trim_start_matches(|c: char| !c.is_alphanumeric())
+            .trim()
+            .to_lowercase()
+    }
+    let wanted = normalize(hint);
+    if wanted.len() < 3 {
+        return None;
+    }
+    let normalized: Vec<String> = names.iter().map(|name| normalize(name)).collect();
+    let matches: Vec<usize> = normalized
+        .iter()
+        .enumerate()
+        .filter(|(_, name)| {
+            name.len() >= 3 && (name.contains(&wanted) || wanted.contains(name.as_str()))
+        })
+        .map(|(index, _)| index)
+        .collect();
+    match matches.len() {
+        1 => Some(matches[0]),
+        0 => None,
+        _ => {
+            let exact: Vec<usize> = matches
+                .iter()
+                .copied()
+                .filter(|&index| normalized[index] == wanted)
+                .collect();
+            (exact.len() == 1).then(|| exact[0])
+        }
+    }
 }
 
 /// The entries of `ancestors` still worth asking for a window, nearest first.
@@ -763,5 +886,37 @@ mod tests {
             live_candidates(&HashMap::new(), &[], 9999),
             Vec::<u32>::new()
         );
+    }
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|name| name.to_string()).collect()
+    }
+
+    #[test]
+    fn the_glyph_prefix_and_case_do_not_hide_a_tab() {
+        let tabs = names(&["✳ Say hi", "pwsh in atoll", "✶ Fix the panel"]);
+        assert_eq!(super::pick_tab(&tabs, "say hi"), Some(0));
+        assert_eq!(super::pick_tab(&tabs, "Fix the panel"), Some(2));
+    }
+
+    #[test]
+    fn a_truncated_summary_still_finds_its_tab() {
+        let tabs = names(&["✳ Rework the taskbar readout states", "✳ Say hi"]);
+        assert_eq!(super::pick_tab(&tabs, "Rework the taskbar"), Some(0));
+    }
+
+    #[test]
+    fn an_ambiguous_match_stays_put_unless_one_is_exact() {
+        let tabs = names(&["✳ deploy", "✳ deploy again"]);
+        // "deploy" matches both by containment, but exactly one exactly.
+        assert_eq!(super::pick_tab(&tabs, "deploy"), Some(0));
+        // "dep" is contained in both and exact in neither: no answer.
+        assert_eq!(super::pick_tab(&tabs, "deplo"), None);
+    }
+
+    #[test]
+    fn a_tiny_hint_is_no_hint() {
+        let tabs = names(&["✳ ab", "cd"]);
+        assert_eq!(super::pick_tab(&tabs, "ab"), None);
     }
 }

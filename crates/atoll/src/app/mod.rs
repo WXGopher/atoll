@@ -674,7 +674,11 @@ impl App {
             .map(|entry| format!("{}:{}", entry.pid, entry.exe))
             .collect();
         crate::util::debug_log(&format!("jump {session_id}: chain {}", chain.join(" <- ")));
-        if win::activate_terminal_from(&ancestors) {
+        // The transcript summary doubles as the tab hint: Claude Code titles
+        // its terminal tab after the same task, which is what lets the jump
+        // land on the session's own tab rather than whichever was in front.
+        let hint = self.titles.borrow().get(session_id).cloned();
+        if win::activate_terminal_from(&ancestors, hint.as_deref()) {
             self.close_flyout();
         }
     }
