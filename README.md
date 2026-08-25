@@ -1,4 +1,4 @@
-# Atoll — an island in your taskbar for your AI coding agents
+# Atoll — Toll Your Agents on Windows
 
 **Claude Code's and Codex's remaining quota at a glance, live sessions one
 click away, and approval cards you can answer without going back to the
