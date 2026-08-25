@@ -1,5 +1,16 @@
 # Atoll
 
+<p align="center">
+  <img src="docs/panel.png" width="400" alt="Atoll's detail panel: every session, and every rate-limit window both agents have reported">
+</p>
+
+<p align="center">
+  <a href="https://github.com/WXGopher/atoll/actions/workflows/ci.yml"><img src="https://github.com/WXGopher/atoll/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/WXGopher/atoll/releases/latest"><img src="https://img.shields.io/github/v/release/WXGopher/atoll?include_prereleases" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/platform-Windows-0078d4" alt="Windows">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="GPL-3.0-or-later"></a>
+</p>
+
 Windows-native agent session monitor & approval hub, inspired by open-vibe-island.
 
 Atoll watches your Claude Code and Codex sessions through their hook systems and
@@ -15,57 +26,81 @@ approvals and `AskUserQuestion` answers go back to a live session from the card,
 and both agents' rate-limit windows are shown. Codex hook installation and
 jumping back to a session's terminal are not done yet.
 
+## What it looks like
+
+**The taskbar readout** — a dot per agent and how much of its tightest
+rate-limit window is left, *inside* the taskbar, in the empty stretch above the
+notification area:
+
+<img src="docs/readout.png" width="96" alt="The readout embedded in a vertical taskbar">
+
+**The detail panel** — click the readout: every session Atoll is tracking, and
+every rate-limit window both agents have reported, each with a bar you can read
+at a glance rather than a sentence you have to parse. The same panel opens from
+the tray icon.
+
+<img src="docs/panel.png" width="400" alt="The detail panel">
+
+**Approval cards** — a card opens beside the readout when Claude Code is about
+to ask a human. Allow or deny a tool call, or pick an answer to a question,
+without going back to the terminal:
+
+<img src="docs/card.png" width="440" alt="An approval card for a Bash command">
+
 ## Features
 
-- **Taskbar usage readout** — a two-line readout that sits *inside* the taskbar,
-  in the empty stretch above the notification area: a dot per agent and how much
-  of its tightest rate-limit window is left, green above 50 %, amber above 20 %,
-  red below. It is a fixed control, like the task-view button: it parks itself
-  just clear of the notification area and moves along on its own as the tray
-  grows; click it for the details. It is a child of the taskbar, so it follows
-  the taskbar's z-order and auto-hide, and re-attaches on its own when the shell
-  restarts. On a shell that will not take a child window it floats against the
-  bar instead, with the same behaviour.
-- **Detail panel** — every session Atoll is tracking, and every rate-limit window
-  both agents have reported, each with a bar you can read at a glance rather than
-  a sentence you have to parse. Opens from the taskbar readout or the tray icon.
-- **Approval cards** — a card opens beside the readout when Claude Code is about
-  to ask a human. Allow or deny a tool call, or pick an answer to a question,
-  without going back to the terminal, and drag it somewhere else if that corner
-  is in your way. Tool calls your own settings already allow never raise a card,
-  and there is no window at all when nothing is being asked.
+- **Taskbar usage readout** — green above 50 %, amber above 20 %, red below. It
+  is a fixed control, like the task-view button: it parks itself just clear of
+  the notification area and moves along on its own as the tray grows; click it
+  for the details. It is a child of the taskbar, so it follows the taskbar's
+  z-order and auto-hide, and re-attaches on its own when the shell restarts. On
+  a shell that will not take a child window it floats against the bar instead,
+  with the same behaviour.
+- **Approval cards** — tool calls your own settings already allow never raise a
+  card, a card you have seen collapses on its own, and there is no window at
+  all when nothing is being asked. Drag one somewhere better and it remembers.
 - **One Atoll at a time** — starting Atoll replaces whatever Atoll is already
-  running rather than refusing to start, so a shortcut double-clicked twice, or a
-  freshly built binary, never leaves two of them fighting over the pipe.
-- **Tray icon and panel** — a drawn icon carrying the session count, and the same
-  detail panel from the notification area.
-- **Rate-limit usage** — Claude Code's windows from the same OAuth endpoint its
-  own tooling reads, and Codex's from its rollout files. Nothing to configure and
-  nothing of yours to displace.
+  running rather than refusing to start, so a shortcut double-clicked twice, or
+  a freshly built binary, never leaves two of them fighting over the pipe.
+- **Tray icon and panel** — a drawn icon carrying the session count, and the
+  same detail panel from the notification area.
+- **Rate-limit usage, frugally** — Claude Code's windows from the same OAuth
+  endpoint its own tooling reads, and Codex's from its rollout files. The
+  endpoint rate-limits the shared token, so Atoll reuses any reading another
+  tool on the machine already fetched and mostly sends no requests of its own.
+  Nothing to configure and nothing of yours to displace.
 
-Planned: Codex hook installation, jumping back to Windows Terminal or VS Code,
-toast notifications, and run-at-login.
+## Install
 
-## Building
+Download the latest zip from
+[Releases](https://github.com/WXGopher/atoll/releases), unzip it anywhere, and
+from that directory:
+
+```sh
+atoll setup install claude   # copy the binaries somewhere stable and wire the hooks
+atoll                        # the taskbar readout and the tray icon
+```
+
+Or build from source, with a recent stable Rust toolchain:
 
 ```sh
 cargo build --workspace --release
 ```
 
-Requires a recent stable Rust toolchain.
+To run Atoll at login, put a shortcut to
+`%LOCALAPPDATA%\Atoll\bin\atoll.exe` into `shell:startup` — a built-in
+run-at-login switch is on the list below.
 
 ## Using it
-
-```sh
-atoll setup install claude   # write the hooks into ~/.claude/settings.json
-atoll                        # the taskbar readout and the tray icon
-```
 
 `atoll setup status claude` says what is currently wired up, and
 `atoll setup uninstall claude` removes Atoll's hooks while leaving any of your
 own alone. `atoll headless` runs the same pipe server with no windows at all and
 prints the event stream, which is the first place to look when something is not
 arriving.
+
+Planned: Codex hook installation, jumping back to Windows Terminal or VS Code,
+toast notifications, and run-at-login.
 
 ### Your configuration is only ever added to
 
