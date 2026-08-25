@@ -544,12 +544,16 @@ pub fn activate_terminal_from(
             title_of(window),
             if activated { "activated" } else { "foreground refused" },
         ));
-        // The window is up; in a tabbed terminal the session may still be
-        // behind another tab. Best-effort, and only ever after a successful
-        // activation: a tab flipped in a background window would be spooky.
+        // The window is up; in a tabbed, split terminal the session may still
+        // be behind another tab or another pane. Pane first — focusing the
+        // pane brings its tab along, which the reverse cannot say — then tab
+        // by title as the fallback. Best-effort, and only ever after a
+        // successful activation: focus flipped in a background window would
+        // be spooky.
         if activated
             && exe == "windowsterminal.exe"
             && let Some(hint) = tab_hint
+            && !focus_terminal_pane(window, hint)
         {
             select_terminal_tab(window, hint);
         }
@@ -568,43 +572,20 @@ pub fn activate_terminal_from(
 /// showing whatever tab it had, which is where window-level activation left
 /// things anyway. Every outcome is logged.
 fn select_terminal_tab(window: isize, hint: &str) {
-    use windows::Win32::System::Com::{
-        CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
-    };
-    use windows::Win32::System::Variant::{VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_I4};
     use windows::Win32::UI::Accessibility::{
-        CUIAutomation, IUIAutomation, IUIAutomationSelectionItemPattern, TreeScope_Descendants,
-        UIA_SelectionItemPatternId, UIA_TabItemControlTypeId, UIA_ControlTypePropertyId,
+        IUIAutomationSelectionItemPattern, TreeScope_Descendants, UIA_SelectionItemPatternId,
+        UIA_TabItemControlTypeId, UIA_ControlTypePropertyId,
     };
     use windows::core::Interface;
 
-    // An i32 VARIANT by hand: the crate ships no constructor, and VT_I4 holds
-    // nothing that needs freeing.
-    let tab_item_type = VARIANT {
-        Anonymous: VARIANT_0 {
-            Anonymous: std::mem::ManuallyDrop::new(VARIANT_0_0 {
-                vt: VT_I4,
-                wReserved1: 0,
-                wReserved2: 0,
-                wReserved3: 0,
-                Anonymous: VARIANT_0_0_0 {
-                    lVal: UIA_TabItemControlTypeId.0,
-                },
-            }),
-        },
-    };
-
     let result: windows::core::Result<()> = (|| {
         unsafe {
-            // S_FALSE ("already initialized") is success; RPC_E_CHANGED_MODE
-            // means the thread is already in the other apartment, which UIA
-            // tolerates too — so the return value is deliberately ignored.
-            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-            let automation: IUIAutomation =
-                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?;
+            let automation = ui_automation()?;
             let root = automation.ElementFromHandle(hwnd(window))?;
-            let condition =
-                automation.CreatePropertyCondition(UIA_ControlTypePropertyId, &tab_item_type)?;
+            let condition = automation.CreatePropertyCondition(
+                UIA_ControlTypePropertyId,
+                &variant_i4(UIA_TabItemControlTypeId.0),
+            )?;
             let tabs = root.FindAll(TreeScope_Descendants, &condition)?;
             let count = tabs.Length()?;
             let mut names = Vec::with_capacity(count as usize);
@@ -629,6 +610,161 @@ fn select_terminal_tab(window: isize, hint: &str) {
     if let Err(error) = result {
         crate::util::debug_log(&format!("jump: tab selection failed: {error}"));
     }
+}
+
+/// A UIA client, on a COM apartment that is whatever the thread already has.
+///
+/// S_FALSE ("already initialized") is success; RPC_E_CHANGED_MODE means the
+/// thread is in the other apartment, which UIA tolerates — so the init
+/// return value is deliberately ignored.
+unsafe fn ui_automation() -> windows::core::Result<windows::Win32::UI::Accessibility::IUIAutomation>
+{
+    use windows::Win32::System::Com::{
+        CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+    };
+    use windows::Win32::UI::Accessibility::CUIAutomation;
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
+    }
+}
+
+/// An i32 VARIANT by hand: the crate ships no constructor, and VT_I4 holds
+/// nothing that needs freeing.
+fn variant_i4(value: i32) -> windows::Win32::System::Variant::VARIANT {
+    use windows::Win32::System::Variant::{VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_I4};
+    VARIANT {
+        Anonymous: VARIANT_0 {
+            Anonymous: std::mem::ManuallyDrop::new(VARIANT_0_0 {
+                vt: VT_I4,
+                wReserved1: 0,
+                wReserved2: 0,
+                wReserved3: 0,
+                Anonymous: VARIANT_0_0_0 { lVal: value },
+            }),
+        },
+    }
+}
+
+/// Focus the pane whose screen is showing this session, via UIA text.
+///
+/// Windows Terminal names every pane after whatever the shell last titled
+/// it — with a prompt theme in charge, that is "PowerShell" four times over —
+/// but it also exposes each pane's visible text through the text pattern it
+/// implements for screen readers. The session's stored title is the head of
+/// its last assistant message, which is exactly what the pane has on screen
+/// while the session sits waiting for its human. A unique match gets
+/// `SetFocus`, and XAML brings that pane's tab forward with it — which is why
+/// this runs before, and usually instead of, tab-title matching.
+///
+/// False when no pane, or more than one, shows the hint: a running session
+/// that has scrolled its message off screen simply fails to match here and
+/// falls back to the tab pass.
+fn focus_terminal_pane(window: isize, hint: &str) -> bool {
+    use windows::Win32::UI::Accessibility::{
+        IUIAutomationTextPattern, TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start,
+        TextUnit_Character, TreeScope_Descendants, UIA_TextControlTypeId,
+        UIA_ControlTypePropertyId, UIA_TextPatternId,
+    };
+    use windows::core::Interface;
+
+    let focused: windows::core::Result<bool> = (|| {
+        unsafe {
+            let automation = ui_automation()?;
+            let root = automation.ElementFromHandle(hwnd(window))?;
+            let condition = automation.CreatePropertyCondition(
+                UIA_ControlTypePropertyId,
+                &variant_i4(UIA_TextControlTypeId.0),
+            )?;
+            let texts = root.FindAll(TreeScope_Descendants, &condition)?;
+            let count = texts.Length()?;
+            let mut panes = Vec::new();
+            let mut screens = Vec::new();
+            for index in 0..count {
+                let element = texts.GetElement(index)?;
+                // Tab labels are Text elements too; the panes are the
+                // TermControls.
+                if element.CurrentClassName()?.to_string() != "TermControl" {
+                    continue;
+                }
+                let pattern: IUIAutomationTextPattern =
+                    element.GetCurrentPattern(UIA_TextPatternId)?.cast()?;
+                let document = pattern.DocumentRange()?;
+                let tail = document.Clone()?;
+                tail.MoveEndpointByRange(
+                    TextPatternRangeEndpoint_Start,
+                    &document,
+                    TextPatternRangeEndpoint_End,
+                )?;
+                let _ = tail.MoveEndpointByUnit(
+                    TextPatternRangeEndpoint_Start,
+                    TextUnit_Character,
+                    -12_000,
+                )?;
+                screens.push(normalize_pane_text(&tail.GetText(-1)?.to_string()));
+                panes.push(element);
+            }
+            let Some(picked) = pick_pane(&screens, hint) else {
+                crate::util::debug_log(&format!(
+                    "jump: no single pane shows \"{hint}\" ({} panes)",
+                    panes.len()
+                ));
+                return Ok(false);
+            };
+            panes[picked].SetFocus()?;
+            crate::util::debug_log(&format!("jump: pane {picked} focused"));
+            Ok(true)
+        }
+    })();
+    match focused {
+        Ok(done) => done,
+        Err(error) => {
+            crate::util::debug_log(&format!("jump: pane focus failed: {error}"));
+            false
+        }
+    }
+}
+
+/// The index of the one pane screen that shows `hint`, if exactly one does.
+///
+/// `screens` are already normalized. Terminal rendering re-wraps lines and
+/// re-draws markdown, so both sides are compared with whitespace and the
+/// usual markup glyphs stripped; a hint too short after that would match
+/// half the screen and is refused instead.
+pub(crate) fn pick_pane(screens: &[String], hint: &str) -> Option<usize> {
+    // The stored title ends in a truncation mark the screen never shows, and
+    // asking for its whole two hundred characters to be visible in one piece
+    // is asking too much: the head of the message is plenty to tell four
+    // panes apart.
+    let needle: String = normalize_pane_text(hint.trim_end_matches(['.', '…']))
+        .chars()
+        .take(32)
+        .collect();
+    if needle.chars().count() < 10 {
+        return None;
+    }
+    let matches: Vec<usize> = screens
+        .iter()
+        .enumerate()
+        .filter(|(_, screen)| screen.contains(&needle))
+        .map(|(index, _)| index)
+        .collect();
+    (matches.len() == 1).then(|| matches[0])
+}
+
+/// Lowercased, with whitespace and markdown-ish glyphs dropped.
+///
+/// The transcript stores the message as written; the terminal shows it as
+/// rendered — wrapped at arbitrary columns, bold markers eaten, bullets
+/// redrawn. Deleting everything both sides disagree about leaves the
+/// characters that actually carry the sentence.
+pub(crate) fn normalize_pane_text(text: &str) -> String {
+    text.chars()
+        .filter(|c| {
+            !c.is_whitespace() && !matches!(c, '*' | '_' | '`' | '#' | '>' | '|' | '-' | '…' | '·' | '•')
+        })
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 /// The index of the one tab that matches `hint`, if exactly one does.
@@ -918,5 +1054,54 @@ mod tests {
     fn a_tiny_hint_is_no_hint() {
         let tabs = names(&["✳ ab", "cd"]);
         assert_eq!(super::pick_tab(&tabs, "ab"), None);
+    }
+
+    fn screens(list: &[&str]) -> Vec<String> {
+        list.iter()
+            .map(|text| super::normalize_pane_text(text))
+            .collect()
+    }
+
+    #[test]
+    fn a_wrapped_rerendered_message_still_identifies_its_pane() {
+        // The terminal wrapped the line mid-word and ate the bold markers;
+        // the transcript kept them. Both normalize to the same characters.
+        let screens = screens(&[
+            "⏵ bypass permissions on · esc to interrupt",
+            "v4 进入总装阶段，流水线：滑\n梯两段预渲染（crop 烘死进素材）\n⏵ waiting",
+            "总进度 99% ｜ 视觉分析 99%（报告已落盘）",
+        ]);
+        let hint = "v4 进入**总装阶段**，流水线：滑梯两段预渲染";
+        assert_eq!(super::pick_pane(&screens, hint), Some(1));
+    }
+
+    #[test]
+    fn two_panes_showing_the_same_text_is_no_answer() {
+        let screens = screens(&["deploy the panel already", "deploy the panel already"]);
+        assert_eq!(super::pick_pane(&screens, "deploy the panel"), None);
+    }
+
+    #[test]
+    fn a_scrolled_away_message_matches_nothing() {
+        let screens = screens(&["✶ running tools · 4m · ↓64k tokens"]);
+        assert_eq!(super::pick_pane(&screens, "the message that scrolled off"), None);
+    }
+
+    #[test]
+    fn a_hint_that_normalizes_too_short_is_refused() {
+        let screens = screens(&["a b c d e f g h i j k"]);
+        assert_eq!(super::pick_pane(&screens, "- a b *c*"), None);
+    }
+
+    #[test]
+    fn a_truncated_title_matches_by_its_head() {
+        // The stored title was capped mid-sentence with a truncation mark;
+        // the screen shows the sentence whole. The head is what matters.
+        let screens = screens(&[
+            "总进度 99% ｜ 视觉分析 99%",
+            "v4 进入总装阶段，流水线：滑梯两段预渲染（crop 烘死进素材，规避剪映 transform 坐标系风险）→ cutlist_v4 主视频轨",
+        ]);
+        let hint = "v4 进入总装阶段，流水线：滑梯两段预渲染（crop 烘死进素材，规避剪映 transform 坐标系风险）→ cutlist_v4（主视频轨 59→76 段）→ 草稿...";
+        assert_eq!(super::pick_pane(&screens, hint), Some(1));
     }
 }
