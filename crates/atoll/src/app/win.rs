@@ -524,11 +524,26 @@ pub fn detach_console() {
 /// is gone, or the session predates the ancestry-carrying hook.
 pub fn activate_terminal_from(ancestors: &[atoll_core::protocol::ProcessRef]) -> bool {
     let alive = process_exes();
-    for pid in live_candidates(&alive, ancestors, std::process::id()) {
-        if let Some(window) = main_window_of(pid) {
-            return activate(window);
-        }
+    let candidates = live_candidates(&alive, ancestors, std::process::id());
+    if candidates.is_empty() {
+        crate::util::debug_log("jump: nothing in the chain is still alive");
+        return false;
     }
+    for pid in candidates {
+        let Some(window) = main_window_of(pid) else {
+            crate::util::debug_log(&format!("jump: {pid} alive but windowless, next"));
+            continue;
+        };
+        let activated = activate(window);
+        crate::util::debug_log(&format!(
+            "jump: {pid} ({}) window \"{}\" -> {}",
+            alive.get(&pid).map(String::as_str).unwrap_or("?"),
+            title_of(window),
+            if activated { "activated" } else { "foreground refused" },
+        ));
+        return activated;
+    }
+    crate::util::debug_log("jump: chain alive but nobody owns a window");
     false
 }
 
@@ -635,17 +650,48 @@ fn main_window_of(pid: u32) -> Option<isize> {
 
 /// Restore if minimized, then bring to the foreground.
 ///
-/// This runs from a click on Atoll's own focused flyout, so this process holds
-/// the foreground and `SetForegroundWindow` is permitted to hand it over — the
-/// one situation Windows lets a window be raised without tricks.
+/// This runs from a click on Atoll's own focused flyout, so this process
+/// should hold the foreground and `SetForegroundWindow` should simply work.
+/// When Windows refuses anyway — focus was somewhere unexpected — the
+/// fallback attaches to the current foreground thread, which makes this
+/// thread count as foreground for one more try. Folklore, but the documented
+/// kind.
 fn activate(handle: isize) -> bool {
     let window = hwnd(handle);
     unsafe {
         if IsIconic(window).as_bool() {
             let _ = ShowWindow(window, SW_RESTORE);
         }
-        SetForegroundWindow(window).as_bool()
+        if SetForegroundWindow(window).as_bool() {
+            return true;
+        }
+
+        use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+        let foreground = GetForegroundWindow();
+        if foreground.is_invalid() {
+            return false;
+        }
+        let foreground_thread = GetWindowThreadProcessId(foreground, None);
+        let our_thread = GetCurrentThreadId();
+        if foreground_thread == 0 || foreground_thread == our_thread {
+            return false;
+        }
+        let _ = AttachThreadInput(our_thread, foreground_thread, true);
+        let _ = BringWindowToTop(window);
+        let activated = SetForegroundWindow(window).as_bool();
+        let _ = AttachThreadInput(our_thread, foreground_thread, false);
+        activated
     }
+}
+
+/// The window's title, for the log.
+fn title_of(handle: isize) -> String {
+    let mut buffer = [0u16; 128];
+    let length = unsafe { GetWindowTextW(hwnd(handle), &mut buffer) };
+    if length <= 0 {
+        return String::new();
+    }
+    String::from_utf16_lossy(&buffer[..length as usize])
 }
 
 #[cfg(test)]

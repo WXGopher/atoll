@@ -664,11 +664,42 @@ impl App {
             .map(|terminal| terminal.ancestors.clone())
             .unwrap_or_default();
         if ancestors.is_empty() {
+            // The markup only routes clicks on jumpable rows, so reaching
+            // here means the row and the table disagree — worth a line.
+            crate::util::debug_log(&format!("jump {session_id}: no ancestry on record"));
             return;
         }
+        let chain: Vec<String> = ancestors
+            .iter()
+            .map(|entry| format!("{}:{}", entry.pid, entry.exe))
+            .collect();
+        crate::util::debug_log(&format!("jump {session_id}: chain {}", chain.join(" <- ")));
         if win::activate_terminal_from(&ancestors) {
             self.close_flyout();
         }
+    }
+
+    /// One line per panel opening: which sessions could jump right now.
+    ///
+    /// This is the line that tells the dead-click stories apart in the log —
+    /// a row that was never clickable versus a click that failed downstream.
+    fn log_jumpability(&self) {
+        let table = self.table.borrow();
+        let summary: Vec<String> = table
+            .sessions()
+            .map(|state| {
+                let hops = state
+                    .terminal
+                    .as_ref()
+                    .map(|terminal| terminal.ancestors.len())
+                    .unwrap_or(0);
+                format!("{}:{hops}", truncate(&state.session_id, 8))
+            })
+            .collect();
+        crate::util::debug_log(&format!(
+            "flyout open: ancestry hops per session [{}]",
+            summary.join(", ")
+        ));
     }
 
     fn decide(self: &Rc<Self>, allow: bool) {
@@ -1083,6 +1114,7 @@ impl App {
             Ok(()) => {
                 self.flyout.window().request_redraw();
                 self.flyout_open.set(true);
+                self.log_jumpability();
                 self.start_title_scan();
                 // Somebody is about to read the numbers: get fresher ones than
                 // the routine cadence keeps, and the open panel repaints when

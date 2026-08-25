@@ -247,6 +247,28 @@ impl EventPrinter {
             event_name,
             payload.tool_name.as_deref().unwrap_or("-"),
         );
+        // The ancestry is what "jump back to the terminal" runs on, and this
+        // stream is the first place anyone looks when a jump does nothing.
+        // Once per prompt, not per event — the chain rarely changes.
+        if matches!(
+            event_name.as_str(),
+            events::SESSION_START | events::USER_PROMPT_SUBMIT
+        ) && let Some(meta) = payload.terminal_meta()
+        {
+            let chain: Vec<String> = meta
+                .ancestors
+                .iter()
+                .map(|entry| format!("{}:{}", entry.pid, entry.exe))
+                .collect();
+            outln!(
+                "           terminal ancestry: {}",
+                if chain.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    chain.join(" <- ")
+                }
+            );
+        }
         if let Some(outcome) = outcome {
             outln!(
                 "           >>> {} is waiting for a decision: {} {}",
