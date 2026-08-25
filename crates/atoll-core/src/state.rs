@@ -472,6 +472,26 @@ impl SessionTable {
         }
         counts
     }
+
+    /// One agent's sessions with something actually going on — running, or
+    /// waiting on the human — and heard from recently enough to believe.
+    ///
+    /// This is the number the taskbar readout shows beside the agent's quota:
+    /// a finished session is not a task, and one that has gone silent past the
+    /// stale window is presumed dead rather than busy.
+    pub fn busy(&self, source: HookSource, now: u64) -> usize {
+        self.sessions
+            .values()
+            .filter(|state| state.source == source)
+            .filter(|state| !state.is_stale(now, self.stale_after_secs))
+            .filter(|state| {
+                matches!(
+                    state.phase,
+                    Phase::Running | Phase::WaitingForApproval | Phase::WaitingForAnswer
+                )
+            })
+            .count()
+    }
 }
 
 #[cfg(test)]
@@ -482,6 +502,33 @@ mod tests {
     /// Baseline for the synthetic clock; any constant works, this one just reads
     /// like a plausible instant rather than 0.
     const T0: u64 = 1_787_000_000;
+
+    /// The readout's per-agent task count: running and waiting sessions count,
+    /// finished ones do not, silence past the stale window stops counting, and
+    /// each agent counts only its own.
+    #[test]
+    fn busy_counts_one_agents_live_sessions_only() {
+        let mut table = SessionTable::new();
+        table.apply(
+            &table_payload("c-run", events::USER_PROMPT_SUBMIT),
+            HookSource::Claude,
+            T0,
+        );
+        table.apply(&table_payload("c-done", events::STOP), HookSource::Claude, T0);
+        let mut waiting = permission_request("Bash", Some("tu-1"));
+        waiting.session_id = Some("c-wait".into());
+        table.apply(&waiting, HookSource::Claude, T0);
+        table.apply(
+            &table_payload("x-run", events::USER_PROMPT_SUBMIT),
+            HookSource::Codex,
+            T0,
+        );
+
+        assert_eq!(table.busy(HookSource::Claude, T0), 2, "running + waiting");
+        assert_eq!(table.busy(HookSource::Codex, T0), 1);
+        assert_eq!(table.busy(HookSource::Claude, T0 + 15 * 60), 0, "stale");
+        assert_eq!(table.busy(HookSource::Codex, T0 + 15 * 60), 0);
+    }
 
     fn payload(raw: Value) -> HookPayload {
         serde_json::from_value(raw).expect("synthetic payload")

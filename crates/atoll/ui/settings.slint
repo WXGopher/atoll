@@ -1,4 +1,4 @@
-import { Button, CheckBox, TabWidget, VerticalBox, HorizontalBox } from "std-widgets.slint";
+import { Button, CheckBox, SpinBox, TabWidget, VerticalBox, HorizontalBox } from "std-widgets.slint";
 
 // The settings window is the one place Atoll shows a conventional window, so it
 // uses the platform style rather than the hand-drawn one everything else has:
@@ -13,6 +13,10 @@ export component SettingsWindow inherits Window {
     in property <bool> claude-installed;
     // Human-readable state of the hook wiring, e.g. "8 of 8 hooks installed".
     in property <string> claude-status: "checking…";
+    // Whether each agent's own directory exists on this machine at all. A
+    // Codex-only machine is a normal machine; the rows say what they found.
+    in property <bool> claude-present: true;
+    in property <bool> codex-present: true;
     in property <bool> usage-bridge;
     // Whether `statusLine` already belongs to somebody else. When it does, the
     // bridge cannot be installed without displacing it, so the opt-in below
@@ -33,6 +37,21 @@ export component SettingsWindow inherits Window {
     // floating against it because the shell would not take a child.
     in property <string> taskbar-status;
     callback set-taskbar-enabled(bool);
+
+    // Read from the registry, which is the mechanism itself, so this can never
+    // drift from what Windows will actually do.
+    in property <bool> run-at-login;
+    callback set-run-at-login(bool);
+
+    in property <bool> show-claude: true;
+    in property <bool> show-codex: true;
+    // "claude" | "codex", and whether it gets its block in the readout.
+    callback set-agent-shown(string, bool);
+
+    // Where the percentage-left colour turns; see `usage_cache::left_tier`.
+    in property <int> good-at: 50;
+    in property <int> warn-at: 20;
+    callback set-thresholds(int, int);
 
     VerticalBox {
         TabWidget {
@@ -63,7 +82,8 @@ export component SettingsWindow inherits Window {
                             alignment: center;
                             Button {
                                 text: root.claude-installed ? "Uninstall" : "Install";
-                                primary: !root.claude-installed;
+                                primary: !root.claude-installed && root.claude-present;
+                                enabled: root.claude-present;
                                 clicked => {
                                     if (root.claude-installed) {
                                         root.uninstall();
@@ -86,7 +106,7 @@ export component SettingsWindow inherits Window {
                     }
 
                     Text {
-                        text: "The usage bridge installs Atoll's status line, which is the only place Claude Code reports its rate-limit windows.";
+                        text: "Atoll reads Claude Code's rate-limit windows from its usage endpoint on its own; the usage bridge is an optional status line that shows them inside the terminal too.";
                         font-size: 11px;
                         wrap: word-wrap;
                     }
@@ -129,7 +149,7 @@ export component SettingsWindow inherits Window {
                                 opacity: 0.5;
                             }
                             Text {
-                                text: "coming soon";
+                                text: root.codex-present ? "coming soon" : "not found on this machine";
                                 font-size: 11px;
                                 opacity: 0.5;
                             }
@@ -152,6 +172,19 @@ export component SettingsWindow inherits Window {
                     spacing: 12px;
 
                     CheckBox {
+                        text: "Start Atoll at login";
+                        checked: root.run-at-login;
+                        toggled => {
+                            root.set-run-at-login(self.checked);
+                        }
+                    }
+
+                    Rectangle {
+                        height: 1px;
+                        background: #80808040;
+                    }
+
+                    CheckBox {
                         text: "Show usage in the taskbar";
                         checked: root.taskbar-enabled;
                         toggled => {
@@ -162,6 +195,62 @@ export component SettingsWindow inherits Window {
                         text: root.taskbar-status;
                         font-size: 11px;
                         wrap: word-wrap;
+                    }
+
+                    HorizontalBox {
+                        padding: 0px;
+                        alignment: start;
+                        spacing: 18px;
+                        CheckBox {
+                            text: "Claude Code";
+                            checked: root.show-claude;
+                            enabled: root.taskbar-enabled;
+                            toggled => {
+                                root.set-agent-shown("claude", self.checked);
+                            }
+                        }
+                        CheckBox {
+                            text: "Codex";
+                            checked: root.show-codex;
+                            enabled: root.taskbar-enabled;
+                            toggled => {
+                                root.set-agent-shown("codex", self.checked);
+                            }
+                        }
+                    }
+
+                    HorizontalBox {
+                        padding: 0px;
+                        alignment: start;
+                        spacing: 8px;
+                        VerticalLayout {
+                            alignment: center;
+                            Text { text: "Green at ≥"; }
+                        }
+                        good-spin := SpinBox {
+                            minimum: 1;
+                            maximum: 100;
+                            value: root.good-at;
+                            edited(value) => {
+                                root.set-thresholds(value, warn-spin.value);
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Text { text: "%   amber at ≥"; }
+                        }
+                        warn-spin := SpinBox {
+                            minimum: 0;
+                            maximum: 99;
+                            value: root.warn-at;
+                            edited(value) => {
+                                root.set-thresholds(good-spin.value, value);
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Text { text: "%, red below"; }
+                        }
                     }
                 }
             }

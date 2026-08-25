@@ -53,6 +53,9 @@ export struct UsageChip {
     value: string,
     // "good" | "warn" | "low", or "" for the placeholder.
     tier: string,
+    // Live sessions — running, or waiting on the human. Zero hides the
+    // agent's task line.
+    busy: int,
 }
 
 export global Theme {

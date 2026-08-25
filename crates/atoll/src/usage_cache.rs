@@ -21,16 +21,18 @@ pub const REFRESH_SECS: u64 = 30;
 /// How much of a rate-limit window has to be left before it stops being worth
 /// worrying about, and before it becomes worth stopping for.
 ///
-/// The same two numbers the user's terminal status line uses, so a percentage
-/// does not change colour depending on where they read it.
+/// The defaults for [`left_tier`]'s thresholds — the same two numbers the
+/// common terminal status lines use, so a percentage does not change colour
+/// depending on where it is read. The user can move both in the settings.
 pub const LEFT_COMFORTABLE: i64 = 50;
 pub const LEFT_TIGHT: i64 = 20;
 
-/// Which of the three colours in `ui/common.slint` a remaining percentage takes.
-pub fn left_tier(left: i64) -> &'static str {
-    if left >= LEFT_COMFORTABLE {
+/// Which of the three colours in `ui/common.slint` a remaining percentage
+/// takes: green at or above `good_at`, amber at or above `warn_at`, red below.
+pub fn left_tier(left: i64, good_at: i64, warn_at: i64) -> &'static str {
+    if left >= good_at {
         "good"
-    } else if left >= LEFT_TIGHT {
+    } else if left >= warn_at {
         "warn"
     } else {
         "low"
@@ -268,6 +270,15 @@ const FAILURE_RETRY_SECS: u64 = 15;
 /// feeding it through [`freshest_on_disk`].
 const RATE_LIMIT_RETRY_SECS: u64 = 120;
 
+/// How long to stand back when there is no OAuth token to ask with.
+///
+/// No token almost always means no Claude Code on this machine at all — a
+/// Codex-only setup is a perfectly normal one — and a laptop should not spend
+/// a worker thread every few seconds rediscovering that. Long, but not
+/// forever: somebody who installs Claude Code mid-afternoon still gets their
+/// numbers within ten minutes, or immediately by clicking the readout.
+const NO_TOKEN_RETRY_SECS: u64 = 600;
+
 /// How fresh the reading has to be before fetching again on the user's click
 /// is pointless rather than polite.
 pub const CLICK_FRESH_SECS: u64 = 15;
@@ -307,8 +318,11 @@ pub fn fetch_claude_limits(now: u64, min_age_secs: u64) -> ClaudeLimits {
             // minutes out for a 429 on the shared token — which can put the
             // stamp in the near future, and `is_stale`'s saturating age
             // arithmetic reads that as "brand new", which is the intent.
-            let retry = if error.to_string().contains("HTTP 429") {
+            let text = error.to_string();
+            let retry = if text.contains("HTTP 429") {
                 RATE_LIMIT_RETRY_SECS
+            } else if text.contains("no OAuth token") {
+                NO_TOKEN_RETRY_SECS
             } else {
                 FAILURE_RETRY_SECS
             };
@@ -550,19 +564,25 @@ mod tests {
         );
     }
 
-    /// The thresholds the user's own terminal status line uses. A percentage
-    /// must not change colour depending on where it is read.
+    /// The colour turns exactly at the thresholds, whatever the user set them
+    /// to; the defaults are fifty and twenty.
     #[test]
-    fn the_percentage_colour_turns_at_fifty_and_at_twenty() {
-        assert_eq!(left_tier(100), "good");
-        assert_eq!(left_tier(LEFT_COMFORTABLE), "good");
-        assert_eq!(left_tier(LEFT_COMFORTABLE - 1), "warn");
-        assert_eq!(left_tier(LEFT_TIGHT), "warn");
-        assert_eq!(left_tier(LEFT_TIGHT - 1), "low");
-        assert_eq!(left_tier(0), "low");
+    fn the_percentage_colour_turns_at_the_thresholds() {
+        let tier = |left| left_tier(left, LEFT_COMFORTABLE, LEFT_TIGHT);
+        assert_eq!(tier(100), "good");
+        assert_eq!(tier(LEFT_COMFORTABLE), "good");
+        assert_eq!(tier(LEFT_COMFORTABLE - 1), "warn");
+        assert_eq!(tier(LEFT_TIGHT), "warn");
+        assert_eq!(tier(LEFT_TIGHT - 1), "low");
+        assert_eq!(tier(0), "low");
         // Nothing outside 0–100 reaches here, but nothing panics if it does.
-        assert_eq!(left_tier(-5), "low");
-        assert_eq!(left_tier(400), "good");
+        assert_eq!(tier(-5), "low");
+        assert_eq!(tier(400), "good");
+
+        // Moved thresholds move the turns with them.
+        assert_eq!(left_tier(69, 70, 30), "warn");
+        assert_eq!(left_tier(70, 70, 30), "good");
+        assert_eq!(left_tier(29, 70, 30), "low");
     }
 
     /// The one that must never invert: both agents report how much is **gone**,

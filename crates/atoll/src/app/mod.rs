@@ -44,7 +44,7 @@ pub mod ui {
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -252,6 +252,7 @@ impl App {
             }
         }
         self.refresh();
+        self.migrate_startup_shortcut();
 
         self.start_adopting();
         self.start_watching_the_readout();
@@ -365,6 +366,9 @@ impl App {
                 }
                 app.handle_tray();
                 app.refresh_tray_icon();
+                // The readout's breathing dot rides the same 100 ms beat; a
+                // readout with no task line ignores this without repainting.
+                app.bar.breathe(app.pulse());
             });
     }
 
@@ -781,7 +785,26 @@ impl App {
             .get()
             .map(|taskbar| taskbar::Along::of(taskbar.rect))
             .unwrap_or(taskbar::Along::Vertical);
-        let chips = taskbar::chips(&self.usage.borrow());
+        let (lines, good_at, warn_at) = {
+            let config = self.config.borrow();
+            let table = self.table.borrow();
+            let now = now_unix_secs();
+            let lines = [
+                taskbar::AgentLine {
+                    agent: HookSource::Claude,
+                    show: config.taskbar.claude,
+                    busy: table.busy(HookSource::Claude, now),
+                },
+                taskbar::AgentLine {
+                    agent: HookSource::Codex,
+                    show: config.taskbar.codex,
+                    busy: table.busy(HookSource::Codex, now),
+                },
+            ];
+            let (good_at, warn_at) = config.taskbar.thresholds();
+            (lines, good_at, warn_at)
+        };
+        let chips = taskbar::chips(&self.usage.borrow(), &lines, good_at, warn_at);
         self.bar.set_chips(&chips, along);
     }
 
@@ -1069,11 +1092,14 @@ impl App {
     fn refresh_flyout(&self) {
         let rows = self.session_rows(usize::MAX, true);
         let live = self.live_agents();
+        let (good_at, warn_at) = self.config.borrow().taskbar.thresholds();
         let usage = usage_sections(
             &self.usage.borrow(),
             &live,
             now_unix_secs(),
             win::local_offset_secs(),
+            good_at,
+            warn_at,
         );
         self.flyout.set_sessions(ModelRc::new(VecModel::from(rows)));
         self.flyout
@@ -1217,6 +1243,24 @@ impl App {
                 app.set_taskbar_enabled(enabled);
             }
         });
+        let app = Rc::downgrade(self);
+        window.on_set_run_at_login(move |enabled| {
+            if let Some(app) = app.upgrade() {
+                app.apply_run_at_login(enabled);
+            }
+        });
+        let app = Rc::downgrade(self);
+        window.on_set_agent_shown(move |agent, shown| {
+            if let Some(app) = app.upgrade() {
+                app.set_agent_shown(&agent, shown);
+            }
+        });
+        let app = Rc::downgrade(self);
+        window.on_set_thresholds(move |good, warn| {
+            if let Some(app) = app.upgrade() {
+                app.set_thresholds(good as i64, warn as i64);
+            }
+        });
 
         // Closing the window with its own titlebar button unmaps it behind the
         // app's back, which is one of the moments the readout needs a repaint.
@@ -1246,6 +1290,27 @@ impl App {
         let Some(window) = open.as_ref() else { return };
         window.set_taskbar_enabled(self.bar.is_shown());
         window.set_taskbar_status(self.taskbar_status().into());
+        window.set_run_at_login(win::runs_at_login());
+        {
+            let config = self.config.borrow();
+            window.set_show_claude(config.taskbar.claude);
+            window.set_show_codex(config.taskbar.codex);
+            window.set_good_at(config.taskbar.good_at as i32);
+            window.set_warn_at(config.taskbar.warn_at as i32);
+        }
+
+        // A machine with only one of the agents is a perfectly normal machine;
+        // the window says which it found rather than offering an install that
+        // has nothing to install into.
+        let claude_present = agent_present(".claude");
+        window.set_claude_present(claude_present);
+        window.set_codex_present(agent_present(".codex"));
+        if !claude_present {
+            window.set_claude_installed(false);
+            window.set_claude_status("not found on this machine".into());
+            window.set_status_line_taken(false);
+            return;
+        }
 
         match atoll_core::install::claude_settings_path()
             .and_then(|path| settings::read_status(&path))
@@ -1269,6 +1334,78 @@ impl App {
                 window.set_claude_status(settings::describe_error(&error).into());
                 window.set_status_line_taken(false);
             }
+        }
+    }
+
+    /// One agent's block in the readout, on or off — saved, and applied at once.
+    fn set_agent_shown(&self, agent: &str, shown: bool) {
+        {
+            let mut config = self.config.borrow_mut();
+            match agent {
+                "claude" => config.taskbar.claude = shown,
+                "codex" => config.taskbar.codex = shown,
+                _ => return,
+            }
+            config.save();
+        }
+        self.refresh_bar();
+    }
+
+    /// The colour thresholds — saved, and applied everywhere a tier shows.
+    fn set_thresholds(self: &Rc<Self>, good_at: i64, warn_at: i64) {
+        {
+            let mut config = self.config.borrow_mut();
+            config.taskbar.good_at = good_at;
+            config.taskbar.warn_at = warn_at;
+            config.save();
+        }
+        self.refresh();
+    }
+
+    /// Wire or unwire the login launch, pointing the registry at the installed
+    /// copy — or at the running one when nothing has been installed yet.
+    ///
+    /// Either direction also sweeps away the Startup-folder shortcut an
+    /// earlier setup left behind, so two mechanisms can never fight.
+    fn apply_run_at_login(&self, enabled: bool) {
+        remove_legacy_startup_shortcut();
+        let exe = match atoll_core::install::stable_bin_dir() {
+            Ok(dir) if dir.join("atoll.exe").exists() => Ok(dir.join("atoll.exe")),
+            _ => std::env::current_exe().map_err(|error| error.to_string()),
+        };
+        let outcome = exe.and_then(|exe| win::set_run_at_login(enabled, &exe));
+        match outcome {
+            Ok(()) => self.note_settings(if enabled {
+                "Atoll starts at login, running the installed copy."
+            } else {
+                "Atoll no longer starts at login."
+            }),
+            Err(error) => {
+                self.note_settings(&format!("Could not update the login launch: {error}"));
+            }
+        }
+    }
+
+    /// An earlier Atoll wired run-at-login as a hand-made Startup shortcut.
+    /// Move that to the registry Run key, once, so the settings checkbox and
+    /// the mechanism agree from the first time the window opens.
+    fn migrate_startup_shortcut(&self) {
+        let Some(link) = legacy_startup_shortcut() else {
+            return;
+        };
+        if !link.exists() {
+            return;
+        }
+        let exe = match atoll_core::install::stable_bin_dir() {
+            Ok(dir) if dir.join("atoll.exe").exists() => dir.join("atoll.exe"),
+            _ => match std::env::current_exe() {
+                Ok(exe) => exe,
+                Err(_) => return,
+            },
+        };
+        if win::set_run_at_login(true, &exe).is_ok() {
+            let _ = std::fs::remove_file(link);
+            crate::util::debug_log("moved the Startup shortcut to the Run key");
         }
     }
 
@@ -1315,6 +1452,8 @@ fn usage_sections(
     live: &[HookSource],
     now: u64,
     offset_secs: i64,
+    good_at: i64,
+    warn_at: i64,
 ) -> Vec<ui::UsageRow> {
     let mut rows = Vec::new();
     for agent in AGENTS {
@@ -1337,7 +1476,7 @@ fn usage_sections(
                 .into(),
             tier: tightest
                 .as_ref()
-                .map(|window| crate::usage_cache::left_tier(window.left))
+                .map(|window| crate::usage_cache::left_tier(window.left, good_at, warn_at))
                 .unwrap_or_default()
                 .into(),
             fill: 0.0,
@@ -1363,7 +1502,7 @@ fn usage_sections(
                 agent: Default::default(),
                 label: window.label.clone().into(),
                 value: format!("{}%", window.left).into(),
-                tier: crate::usage_cache::left_tier(window.left).into(),
+                tier: crate::usage_cache::left_tier(window.left, good_at, warn_at).into(),
                 fill: window.left as f32 / 100.0,
                 resets: crate::usage_cache::reset_label(window.resets_at, now, offset_secs)
                     .map(|when| format!("resets {when}"))
@@ -1501,6 +1640,29 @@ fn clamp_between(start: i32, length: i32, low: i32, high: i32) -> i32 {
     start.clamp(first, (high - length - FLYOUT_MARGIN).max(first))
 }
 
+/// Whether an agent's own directory exists under the home directory — the
+/// cheapest honest test for "is this agent on this machine at all".
+fn agent_present(dir: &str) -> bool {
+    crate::util::home_dir()
+        .map(|home| home.join(dir).exists())
+        .unwrap_or(false)
+}
+
+/// Where the hand-made Startup shortcut lived, while it existed.
+fn legacy_startup_shortcut() -> Option<PathBuf> {
+    let appdata = std::env::var_os("APPDATA")?;
+    Some(
+        PathBuf::from(appdata).join(r"Microsoft\Windows\Start Menu\Programs\Startup\Atoll.lnk"),
+    )
+}
+
+/// Remove the legacy shortcut, so the registry Run key is the one mechanism.
+fn remove_legacy_startup_shortcut() {
+    if let Some(link) = legacy_startup_shortcut() {
+        let _ = std::fs::remove_file(link);
+    }
+}
+
 /// The last thing the agent said, from its transcript.
 ///
 /// Read on `Stop` only. It is a whole-file scan, and `Stop` is both the one time
@@ -1573,7 +1735,7 @@ mod tests {
     /// taller than the window rows under them, so a count is not enough.
     #[test]
     fn the_usage_block_is_measured_row_by_row() {
-        let rows = usage_sections(&both_agents(), &[], NOW, 0);
+        let rows = usage_sections(&both_agents(), &[], NOW, 0, 50, 20);
         // claude + 3 windows, codex + 2 windows.
         assert_eq!(rows.len(), 7);
         assert_eq!(rows.iter().filter(|row| row.heading).count(), 2);
@@ -1589,7 +1751,7 @@ mod tests {
     /// carries a bar whose length is the number.
     #[test]
     fn every_section_leads_with_its_tightest_window() {
-        let rows = usage_sections(&both_agents(), &[], NOW, 0);
+        let rows = usage_sections(&both_agents(), &[], NOW, 0, 50, 20);
 
         assert_eq!(rows[0].label, "claude");
         assert_eq!(rows[0].value, "69%", "the week, not the session");
@@ -1617,7 +1779,7 @@ mod tests {
 
     #[test]
     fn a_section_appears_for_a_running_agent_with_nothing_to_report() {
-        let rows = usage_sections(&UsageSnapshot::default(), &[CODEX], NOW, 0);
+        let rows = usage_sections(&UsageSnapshot::default(), &[CODEX], NOW, 0, 50, 20);
         assert_eq!(rows.len(), 2);
         assert!(rows[0].heading && rows[0].label == "codex");
         assert_eq!(rows[0].value, "");
@@ -1625,7 +1787,7 @@ mod tests {
 
         // And an idle machine with no readings gets no sections at all; the
         // panel says "No usage data yet" itself.
-        assert!(usage_sections(&UsageSnapshot::default(), &[], NOW, 0).is_empty());
+        assert!(usage_sections(&UsageSnapshot::default(), &[], NOW, 0, 50, 20).is_empty());
     }
 
     /// The label the panel shows for a session: the project it is in, then what

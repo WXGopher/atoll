@@ -72,11 +72,40 @@ pub struct TaskbarConfig {
     /// Off means no readout in the taskbar at all. On by default: it is the
     /// cheapest place Atoll has to put a number somebody checks all day.
     pub enabled: bool,
+    /// Whether each agent gets its block in the readout. Both on by default;
+    /// somebody who runs only one agent can give the other's rows back to the
+    /// taskbar.
+    pub claude: bool,
+    pub codex: bool,
+    /// Where the percentage-left colour turns: green at or above `good_at`,
+    /// amber at or above `warn_at`, red below. The defaults match the common
+    /// terminal status lines so a number does not change colour depending on
+    /// where it is read.
+    pub good_at: i64,
+    pub warn_at: i64,
 }
 
 impl Default for TaskbarConfig {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            claude: true,
+            codex: true,
+            good_at: crate::usage_cache::LEFT_COMFORTABLE,
+            warn_at: crate::usage_cache::LEFT_TIGHT,
+        }
+    }
+}
+
+impl TaskbarConfig {
+    /// The thresholds in an order the tier function can trust: a hand-edited
+    /// config with `warn_at` above `good_at` reads as the two swapped rather
+    /// than as a colour scale with a hole in it.
+    pub fn thresholds(&self) -> (i64, i64) {
+        (
+            self.good_at.max(self.warn_at),
+            self.warn_at.min(self.good_at),
+        )
     }
 }
 

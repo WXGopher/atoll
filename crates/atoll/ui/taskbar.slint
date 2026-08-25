@@ -2,9 +2,10 @@ import { Theme, UsageChip } from "common.slint";
 
 // The usage readout that sits inside the taskbar.
 //
-// Two chips — `● 92%` for Claude, `● 15%` for Codex — stacked on a vertical
-// taskbar and side by side on a horizontal one. Rust decides which; see
-// `taskbar::Along`.
+// One block per agent: `● 92%` for the quota, and — while the agent has live
+// sessions — a second line with a breathing dot and the count. Blocks stack on
+// a vertical taskbar and sit side by side on a horizontal one. Rust decides
+// which; see `taskbar::Along`.
 //
 // Deliberately austere. This is a readout on somebody else's furniture: no
 // border, no card, no background of its own beyond the faintest wash to lift
@@ -14,6 +15,79 @@ import { Theme, UsageChip } from "common.slint";
 // It has no TouchArea, and that is not an omission. Clicks and drags on this
 // window are picked up in Rust, from Windows directly; see
 // `taskbar::TaskbarView::poll_click` for what makes that necessary.
+//
+// The breathing dot's phase is pushed from Rust at 10 Hz, and only while a
+// task line is showing — never a display-rate animation, and never a repaint
+// while the readout is at rest. A resident widget has no business keeping a
+// laptop's GPU awake.
+component AgentBlock {
+    in property <UsageChip> chip;
+    in property <float> pulse;
+
+    // Mirrors `taskbar::CHIP_HEIGHT` and friends.
+    property <length> chip-h: 15px;
+    property <length> dot: 7px;
+
+    function agent-color() -> color {
+        chip.agent == "codex"
+            ? Theme.codex
+            : (chip.agent == "claude" ? Theme.claude : Theme.idle-dot);
+    }
+
+    VerticalLayout {
+        spacing: 1px;
+        HorizontalLayout {
+            height: root.chip-h;
+            spacing: 4px;
+            Rectangle {
+                width: root.dot;
+                horizontal-stretch: 0;
+                Rectangle {
+                    y: (parent.height - root.dot) / 2;
+                    width: root.dot;
+                    height: root.dot;
+                    border-radius: root.dot / 2;
+                    background: root.agent-color();
+                }
+            }
+            Text {
+                text: chip.value;
+                color: chip.tier == "low"
+                    ? Theme.spent
+                    : (chip.tier == "warn" ? Theme.thin : (chip.tier == "good" ? Theme.plenty : Theme.faint));
+                font-size: 11px;
+                font-weight: 600;
+                vertical-alignment: center;
+                horizontal-alignment: left;
+            }
+        }
+        if chip.busy > 0: HorizontalLayout {
+            height: root.chip-h;
+            spacing: 4px;
+            Rectangle {
+                width: root.dot;
+                horizontal-stretch: 0;
+                Rectangle {
+                    y: (parent.height - root.dot) / 2;
+                    width: root.dot;
+                    height: root.dot;
+                    border-radius: root.dot / 2;
+                    background: root.agent-color();
+                    opacity: 0.25 + 0.75 * root.pulse;
+                }
+            }
+            Text {
+                text: chip.busy;
+                color: Theme.faint;
+                font-size: 11px;
+                font-weight: 600;
+                vertical-alignment: center;
+                horizontal-alignment: left;
+            }
+        }
+    }
+}
+
 export component TaskbarBar inherits Window {
     // Matched verbatim by the Win32 code that finds this window to reparent it
     // into the taskbar.
@@ -25,11 +99,12 @@ export component TaskbarBar inherits Window {
     in property <[UsageChip]> chips;
     // Set from the taskbar's own shape, not from a docking constant.
     in property <bool> vertical: true;
+    // The breathing dot's brightness, 0..1; see `TaskbarView::breathe`.
+    in property <float> pulse: 1.0;
 
-    // Mirrors `taskbar::PADDING` and friends.
+    // Mirrors `taskbar::PADDING` and `taskbar::BLOCK_GAP`.
     property <length> pad: 4px;
-    property <length> chip-h: 15px;
-    property <length> dot: 7px;
+    property <length> block-gap: 4px;
 
     Rectangle {
         width: 100%;
@@ -41,64 +116,19 @@ export component TaskbarBar inherits Window {
 
         if root.vertical: VerticalLayout {
             padding: root.pad;
-            spacing: 1px;
-            for chip in root.chips: chip-row := HorizontalLayout {
-                height: root.chip-h;
-                spacing: 4px;
-                Rectangle {
-                    width: root.dot;
-                    horizontal-stretch: 0;
-                    Rectangle {
-                        y: (parent.height - root.dot) / 2;
-                        width: root.dot;
-                        height: root.dot;
-                        border-radius: root.dot / 2;
-                        background: chip.agent == "codex"
-                            ? Theme.codex
-                            : (chip.agent == "claude" ? Theme.claude : Theme.idle-dot);
-                    }
-                }
-                Text {
-                    text: chip.value;
-                    color: chip.tier == "low"
-                        ? Theme.spent
-                        : (chip.tier == "warn" ? Theme.thin : (chip.tier == "good" ? Theme.plenty : Theme.faint));
-                    font-size: 11px;
-                    font-weight: 600;
-                    vertical-alignment: center;
-                    horizontal-alignment: left;
-                }
+            spacing: root.block-gap;
+            for chip in root.chips: AgentBlock {
+                chip: chip;
+                pulse: root.pulse;
             }
         }
 
         if !root.vertical: HorizontalLayout {
             padding: root.pad;
             spacing: 10px;
-            for chip in root.chips: HorizontalLayout {
-                height: root.chip-h;
-                spacing: 4px;
-                Rectangle {
-                    width: root.dot;
-                    horizontal-stretch: 0;
-                    Rectangle {
-                        y: (parent.height - root.dot) / 2;
-                        width: root.dot;
-                        height: root.dot;
-                        border-radius: root.dot / 2;
-                        background: chip.agent == "codex"
-                            ? Theme.codex
-                            : (chip.agent == "claude" ? Theme.claude : Theme.idle-dot);
-                    }
-                }
-                Text {
-                    text: chip.value;
-                    color: chip.tier == "low"
-                        ? Theme.spent
-                        : (chip.tier == "warn" ? Theme.thin : (chip.tier == "good" ? Theme.plenty : Theme.faint));
-                    font-size: 11px;
-                    font-weight: 600;
-                    vertical-alignment: center;
-                }
+            for chip in root.chips: AgentBlock {
+                chip: chip;
+                pulse: root.pulse;
             }
         }
     }

@@ -1,5 +1,9 @@
 # Atoll
 
+**Atoll** — a Windows-native taskbar companion for AI coding agents: Claude
+Code's and Codex's remaining quota at a glance, live sessions one click away,
+and approval cards you can answer without going back to the terminal.
+
 <p align="center">
   <img src="docs/panel.png" width="400" alt="Atoll's detail panel: every session, and every rate-limit window both agents have reported">
 </p>

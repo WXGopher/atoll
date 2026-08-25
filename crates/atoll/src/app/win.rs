@@ -7,6 +7,9 @@ use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
     HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, ScreenToClient,
 };
+use windows::Win32::System::Registry::{
+    HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON};
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{BOOL, PCWSTR};
@@ -170,6 +173,64 @@ pub fn hide_from_taskbar(handle: isize) {
         let _ = ShowWindow(window, SW_SHOWNOACTIVATE);
     }
     keep_on_top(handle);
+}
+
+// --------------------------------------------------------- run at login
+
+/// `HKCU`'s per-user Run key: no elevation, no Task Scheduler, exactly what
+/// the Startup folder does but manageable without shell COM.
+const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+const RUN_VALUE: &str = "Atoll";
+
+/// Whether Windows will start Atoll at login — asked of the registry itself,
+/// which is the mechanism, so the checkbox can never drift from the truth.
+pub fn runs_at_login() -> bool {
+    let key = wide(RUN_KEY);
+    let value = wide(RUN_VALUE);
+    unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            PCWSTR(key.as_ptr()),
+            PCWSTR(value.as_ptr()),
+            RRF_RT_REG_SZ,
+            None,
+            None,
+            None,
+        )
+        .is_ok()
+    }
+}
+
+/// Wire or unwire the login launch. `exe` should be the installed copy —
+/// pointing the registry at a build directory would break the launch on the
+/// next `cargo clean`.
+pub fn set_run_at_login(enabled: bool, exe: &std::path::Path) -> Result<(), String> {
+    let key = wide(RUN_KEY);
+    let value = wide(RUN_VALUE);
+    let result = unsafe {
+        if enabled {
+            let command = wide(&format!("\"{}\"", exe.display()));
+            RegSetKeyValueW(
+                HKEY_CURRENT_USER,
+                PCWSTR(key.as_ptr()),
+                PCWSTR(value.as_ptr()),
+                REG_SZ.0,
+                Some(command.as_ptr() as *const std::ffi::c_void),
+                (command.len() * 2) as u32,
+            )
+        } else {
+            RegDeleteKeyValueW(
+                HKEY_CURRENT_USER,
+                PCWSTR(key.as_ptr()),
+                PCWSTR(value.as_ptr()),
+            )
+        }
+    };
+    if result.is_ok() || (!enabled && result == windows::Win32::Foundation::ERROR_FILE_NOT_FOUND) {
+        Ok(())
+    } else {
+        Err(format!("registry error {}", result.0))
+    }
 }
 
 /// Set the tool-window bits on a window that is not currently visible.
