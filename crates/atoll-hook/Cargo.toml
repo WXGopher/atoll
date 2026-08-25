@@ -13,5 +13,5 @@ path = "src/main.rs"
 [dependencies]
 # No tokio, no clap: this binary is spawned on every hook event, so it depends
 # only on serde_json and the dependency-free half of `atoll-core`.
-atoll-core = { path = "../atoll-core", version = "0.1.0", default-features = false }
+atoll-core = { path = "../atoll-core", version = "0.1.1", default-features = false }
 serde_json.workspace = true

@@ -1,8 +1,8 @@
-# Atoll
+# Atoll — an island in your taskbar for your AI coding agents
 
-**Atoll** — a Windows-native taskbar companion for AI coding agents: Claude
-Code's and Codex's remaining quota at a glance, live sessions one click away,
-and approval cards you can answer without going back to the terminal.
+**Claude Code's and Codex's remaining quota at a glance, live sessions one
+click away, and approval cards you can answer without going back to the
+terminal.** Windows-native, and invisible until you look.
 
 <p align="center">
   <img src="docs/panel.png" width="400" alt="Atoll's detail panel: every session, and every rate-limit window both agents have reported">
@@ -14,8 +14,6 @@ and approval cards you can answer without going back to the terminal.
   <img src="https://img.shields.io/badge/platform-Windows-0078d4" alt="Windows">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="GPL-3.0-or-later"></a>
 </p>
-
-Windows-native agent session monitor & approval hub, inspired by open-vibe-island.
 
 Atoll watches your Claude Code and Codex sessions through their hook systems and
 puts what matters where you already look: how much quota is left, in the
@@ -34,7 +32,9 @@ jumping back to a session's terminal are not done yet.
 
 **The taskbar readout** — a dot per agent and how much of its tightest
 rate-limit window is left, *inside* the taskbar, in the empty stretch above the
-notification area:
+notification area. While sessions are live it grows a task line: an amber
+pulsing "?" for sessions waiting on you, a breathing dot for the ones running,
+a quiet check for the ones done:
 
 <img src="docs/readout.png" width="96" alt="The readout embedded in a vertical taskbar">
 
@@ -59,7 +59,14 @@ without going back to the terminal:
   for the details. It is a child of the taskbar, so it follows the taskbar's
   z-order and auto-hide, and re-attaches on its own when the shell restarts. On
   a shell that will not take a child window it floats against the bar instead,
-  with the same behaviour.
+  with the same behaviour. Right-click it for Settings and Quit.
+- **A task line that says what your sessions are doing** — pending, running and
+  done, each with its own mark, per agent. The line appears only while sessions
+  are live, and nothing animates unless something is pending or running, so an
+  idle Atoll costs an idle machine nothing.
+- **A settings window** — run at login, show or hide each agent's block in the
+  readout, and move the two colour thresholds. A machine with only one of the
+  agents installed just says so, and gives the other's rows back to the taskbar.
 - **Approval cards** — tool calls your own settings already allow never raise a
   card, a card you have seen collapses on its own, and there is no window at
   all when nothing is being asked. Drag one somewhere better and it remembers.
@@ -101,9 +108,9 @@ tying it to the exact commit and workflow run that produced it:
 gh attestation verify atoll-v0.1.0-windows-x86_64.zip --repo WXGopher/atoll
 ```
 
-To run Atoll at login, put a shortcut to
-`%LOCALAPPDATA%\Atoll\bin\atoll.exe` into `shell:startup` — a built-in
-run-at-login switch is on the list below.
+To run Atoll at login, flip the switch in Settings — right-click the readout,
+or the tray icon. It keeps the registry Run key for you, and migrates any
+Startup-folder shortcut left over from older instructions.
 
 ## Using it
 
@@ -114,7 +121,8 @@ prints the event stream, which is the first place to look when something is not
 arriving.
 
 Planned: Codex hook installation, jumping back to Windows Terminal or VS Code,
-toast notifications, and run-at-login.
+and toast notifications — the working list lives in
+[docs/ROADMAP.md](docs/ROADMAP.md).
 
 ### Your configuration is only ever added to
 
