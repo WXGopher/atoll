@@ -76,8 +76,11 @@ without going back to the terminal:
   window that owns the session to the front. The hook records the chain of
   processes above it while every link is alive, and a click raises the
   nearest of them still running with a window — so with several Windows
-  Terminal windows open, the session's own window is the one that rises. Rows
-  whose terminal is unknown draw no affordance and eat no clicks.
+  Terminal windows open, the session's own window is the one that rises.
+  Inside a split window, the pane showing the session gets the focus, found
+  by what it has on screen rather than by pane titles a prompt theme keeps
+  overwriting. Rows whose terminal is unknown draw no affordance and eat no
+  clicks.
 - **One Atoll at a time** — starting Atoll replaces whatever Atoll is already
   running rather than refusing to start, so a shortcut double-clicked twice, or
   a freshly built binary, never leaves two of them fighting over the pipe.

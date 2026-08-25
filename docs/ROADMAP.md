@@ -42,8 +42,10 @@ order is closer to "what is worth doing" than to "what happens first".
   raises the nearest entry still running the same executable that owns a real
   window. Windows Terminal keeps one process per window, so with several open
   the right one rises; VS Code's integrated terminal resolves through the pty
-  host the same way. Rows whose terminal is unknown draw no affordance and
-  eat no clicks.
+  host the same way. Inside the window, the session's own pane is found by
+  what it shows on screen — panes carry no usable names — and focused; a tab
+  matched by title is the fallback. Rows whose terminal is unknown draw no
+  affordance and eat no clicks.
 
 ## Next: platform work
 
@@ -111,8 +113,14 @@ suspicion that it might be wrong.
 - **The bring-up log stamps events in UTC.** Local time needs either a date-time
   dependency or a `GetLocalTime` call, and neither has been worth it for a log
   that is only read while something is broken.
-- **The jump lands on the window, not the tab.** With several tabs in one
-  Windows Terminal window the right window comes forward showing whatever tab
-  it had up. Selecting the session's own tab means UI Automation against tab
-  titles that shells rewrite at will — worth doing only if the window-level
-  jump turns out to not be enough in practice.
+- **The jump reads only the visible tab's panes.** Pane matching goes by the
+  text each pane has on screen, read through UI Automation — but Windows
+  Terminal only exposes the active tab's panes, so a session parked behind
+  another tab falls back to tab-title matching, and titles are whatever the
+  shell's prompt theme last wrote. Iterating the tabs — select, scan, restore
+  — would close the gap at the cost of visible flicker.
+- **A running session's pane may not match.** The pane is identified by the
+  session's last assistant message being on screen, which is true of a
+  session waiting on a human — the case a jump exists for — and often false
+  of one mid-turn, whose screen is tool status. Those land on the window and
+  log why.
