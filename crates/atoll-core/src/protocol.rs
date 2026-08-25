@@ -170,6 +170,15 @@ impl HookPayload {
     }
 }
 
+/// One process in the hook's ancestry, captured while the chain was alive.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessRef {
+    pub pid: u32,
+    /// Executable file name only, lowercased: `"windowsterminal.exe"`.
+    pub exe: String,
+}
+
 /// Where the session lives, as seen from inside the hook process.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -179,11 +188,15 @@ pub struct TerminalMeta {
     /// PID of the hook process. Useless by the time anyone clicks — the hook
     /// exits within milliseconds — but kept on the wire for diagnostics.
     pub hook_pid: u32,
-    /// PID of the hook's parent: the agent CLI, which lives as long as the
-    /// session does. This is the anchor for walking the process ancestry to
-    /// the terminal window that owns the session, at click time.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_pid: Option<u32>,
+    /// The hook's ancestry, nearest first: the transient shell the agent
+    /// spawned the hook through, the agent CLI, the user's shell, the
+    /// terminal host. Captured at event time because that is the one moment
+    /// every link is certainly alive — the hook's own parent is typically a
+    /// `cmd.exe` that dies milliseconds later, so a click resolves against
+    /// this list rather than against the process tree of the past. Ends
+    /// before `explorer.exe`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ancestors: Vec<ProcessRef>,
 }
 
 /// Hook event names Atoll knows about.
@@ -729,23 +742,36 @@ mod tests {
         payload.set_terminal_meta(TerminalMeta {
             env,
             hook_pid: 42,
-            parent_pid: Some(41),
+            ancestors: vec![
+                ProcessRef {
+                    pid: 41,
+                    exe: "cmd.exe".into(),
+                },
+                ProcessRef {
+                    pid: 40,
+                    exe: "windowsterminal.exe".into(),
+                },
+            ],
         });
 
+        // Key order inside the flattened extra map is serde_json's business,
+        // not ours: assert presence, and shapes via the decode below.
         let encoded = serde_json::to_string(&payload).unwrap();
         assert!(encoded.contains(r#""atollTerminal""#));
-        assert!(encoded.contains(r#""parentPid":41"#));
+        assert!(encoded.contains(r#""ancestors""#));
+        assert!(encoded.contains(r#""windowsterminal.exe""#));
 
         let decoded: HookPayload = serde_json::from_str(&encoded).unwrap();
         let meta = decoded.terminal_meta().unwrap();
         assert_eq!(meta.hook_pid, 42);
-        assert_eq!(meta.parent_pid, Some(41));
+        assert_eq!(meta.ancestors.len(), 2);
+        assert_eq!(meta.ancestors[1].exe, "windowsterminal.exe");
         assert_eq!(meta.env["WT_SESSION"], Value::String("guid".into()));
     }
 
     #[test]
     fn terminal_meta_from_an_older_hook_still_parses() {
-        // A hook built before parentPid existed sends meta without it; the
+        // A hook built before ancestors existed sends meta without them; the
         // session must simply come out not jumpable, not fail to parse.
         let raw = serde_json::json!({
             "atollTerminal": {"env": {}, "hookPid": 7}
@@ -753,7 +779,7 @@ mod tests {
         let payload: HookPayload = serde_json::from_value(raw).unwrap();
         let meta = payload.terminal_meta().unwrap();
         assert_eq!(meta.hook_pid, 7);
-        assert_eq!(meta.parent_pid, None);
+        assert!(meta.ancestors.is_empty());
     }
 
     #[test]

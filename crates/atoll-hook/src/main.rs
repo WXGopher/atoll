@@ -127,22 +127,23 @@ fn collect_terminal_meta() -> TerminalMeta {
     TerminalMeta {
         env,
         hook_pid: std::process::id(),
-        // The parent is the agent CLI, which outlives this hook by the whole
-        // session. The app walks the rest of the ancestry at click time, when
-        // somebody actually asks to jump back to the terminal.
-        parent_pid: parent_pid(),
+        // Captured here, not at click time: the hook's own parent is usually a
+        // shell that lives for milliseconds, and this is the one moment the
+        // whole chain up to the terminal is certainly alive.
+        ancestors: ancestry::collect(),
     }
 }
 
-/// PID of this process's parent, from `NtQueryInformationProcess`.
+/// The process ancestry walk, on raw FFI.
 ///
-/// One syscall on the pseudo-handle: no snapshot, no allocation, and no new
-/// dependency, which matters in a binary that runs on every hook event. The
-/// parent may already be gone by the time anyone reads this — PID reuse is the
-/// reader's problem, and the reader guards against it by only ever activating
-/// windows owned by processes that look like terminals.
+/// Raw rather than the `windows` crate because this binary is spawned on every
+/// hook event: it keeps exactly two dependencies, and three syscalls per hop —
+/// open, ask, name — cost microseconds against a startup budget of
+/// single-digit milliseconds.
 #[cfg(windows)]
-fn parent_pid() -> Option<u32> {
+mod ancestry {
+    use atoll_core::protocol::ProcessRef;
+
     #[repr(C)]
     struct ProcessBasicInformation {
         exit_status: isize,
@@ -164,35 +165,102 @@ fn parent_pid() -> Option<u32> {
         ) -> i32;
     }
 
-    // GetCurrentProcess() without linking kernel32 declarations: the
-    // documented pseudo-handle value.
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
+        fn CloseHandle(handle: isize) -> i32;
+        fn QueryFullProcessImageNameW(
+            handle: isize,
+            flags: u32,
+            name: *mut u16,
+            size: *mut u32,
+        ) -> i32;
+    }
+
+    /// `GetCurrentProcess()`'s documented pseudo-handle value.
     const CURRENT_PROCESS: isize = -1;
     const PROCESS_BASIC_INFORMATION_CLASS: u32 = 0;
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
 
-    let mut info = ProcessBasicInformation {
-        exit_status: 0,
-        peb_base_address: std::ptr::null_mut(),
-        affinity_mask: 0,
-        base_priority: 0,
-        unique_process_id: 0,
-        inherited_from_unique_process_id: 0,
-    };
-    let mut written = 0u32;
-    let status = unsafe {
-        NtQueryInformationProcess(
-            CURRENT_PROCESS,
-            PROCESS_BASIC_INFORMATION_CLASS,
-            (&raw mut info).cast(),
-            size_of::<ProcessBasicInformation>() as u32,
-            &raw mut written,
-        )
-    };
-    (status == 0).then(|| u32::try_from(info.inherited_from_unique_process_id).ok())?
+    /// This process's ancestors, nearest first, stopping before the shell.
+    ///
+    /// Every entry was alive at the instant it was recorded, pid and name
+    /// taken from the same open handle — which is what lets a later reader
+    /// treat "same pid, same exe" as "same process" with a straight face.
+    /// Stops at `explorer.exe`: it is everyone's ancestor and nobody's
+    /// terminal. The cap is paranoia against parent-pid cycles.
+    pub fn collect() -> Vec<ProcessRef> {
+        let mut chain: Vec<ProcessRef> = Vec::new();
+        let mut next = parent_of(CURRENT_PROCESS);
+        while chain.len() < 12 {
+            let Some(pid) = next.filter(|&pid| pid > 4) else {
+                break;
+            };
+            if chain.iter().any(|entry| entry.pid == pid) {
+                break;
+            }
+            let handle =
+                unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+            if handle == 0 {
+                break;
+            }
+            let exe = exe_name(handle);
+            next = parent_of(handle);
+            unsafe { CloseHandle(handle) };
+            let Some(exe) = exe else { break };
+            if exe == "explorer.exe" {
+                break;
+            }
+            chain.push(ProcessRef { pid, exe });
+        }
+        chain
+    }
+
+    /// The parent's pid, from `ProcessBasicInformation`.
+    fn parent_of(handle: isize) -> Option<u32> {
+        let mut info = ProcessBasicInformation {
+            exit_status: 0,
+            peb_base_address: std::ptr::null_mut(),
+            affinity_mask: 0,
+            base_priority: 0,
+            unique_process_id: 0,
+            inherited_from_unique_process_id: 0,
+        };
+        let mut written = 0u32;
+        let status = unsafe {
+            NtQueryInformationProcess(
+                handle,
+                PROCESS_BASIC_INFORMATION_CLASS,
+                (&raw mut info).cast(),
+                size_of::<ProcessBasicInformation>() as u32,
+                &raw mut written,
+            )
+        };
+        (status == 0)
+            .then(|| u32::try_from(info.inherited_from_unique_process_id).ok())?
+    }
+
+    /// The executable's file name, lowercased: `"windowsterminal.exe"`.
+    fn exe_name(handle: isize) -> Option<String> {
+        let mut buffer = [0u16; 512];
+        let mut length = buffer.len() as u32;
+        let ok = unsafe {
+            QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &raw mut length)
+        };
+        if ok == 0 {
+            return None;
+        }
+        let path = String::from_utf16_lossy(&buffer[..length as usize]);
+        let name = path.rsplit(['\\', '/']).next().unwrap_or(&path);
+        Some(name.to_lowercase())
+    }
 }
 
 #[cfg(not(windows))]
-fn parent_pid() -> Option<u32> {
-    None
+mod ancestry {
+    pub fn collect() -> Vec<atoll_core::protocol::ProcessRef> {
+        Vec::new()
+    }
 }
 
 /// Connect, send `line`, and — when `wait_budget` is set — wait that long for a
@@ -271,20 +339,29 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn parent_pid_answers_with_a_real_process() {
-        // This test process was spawned by the test runner, so the syscall
-        // must find a parent — a real pid, not a system sentinel.
-        let parent = parent_pid().expect("a parent pid");
-        assert!(parent > 4);
-        assert_ne!(parent, std::process::id());
+    fn the_ancestry_walk_finds_real_processes() {
+        // This test process was spawned by the test runner, so the chain must
+        // hold at least that — live pids, named executables, no duplicates.
+        let chain = ancestry::collect();
+        assert!(!chain.is_empty());
+        for entry in &chain {
+            assert!(entry.pid > 4);
+            assert_ne!(entry.pid, std::process::id());
+            assert!(entry.exe.ends_with(".exe"), "unexpected exe: {}", entry.exe);
+            assert_eq!(entry.exe, entry.exe.to_lowercase());
+            assert_ne!(entry.exe, "explorer.exe");
+        }
+        let mut pids: Vec<u32> = chain.iter().map(|entry| entry.pid).collect();
+        pids.dedup();
+        assert_eq!(pids.len(), chain.len());
     }
 
     #[test]
-    fn terminal_meta_carries_the_parent() {
+    fn terminal_meta_carries_the_ancestry() {
         let meta = collect_terminal_meta();
         assert_eq!(meta.hook_pid, std::process::id());
         if cfg!(windows) {
-            assert!(meta.parent_pid.is_some());
+            assert!(!meta.ancestors.is_empty());
         }
     }
 }

@@ -912,13 +912,17 @@ mod tests {
         raw[crate::protocol::TERMINAL_META_KEY] = json!({
             "env": {"WT_SESSION": "synthetic-guid"},
             "hookPid": 4242,
-            "parentPid": 4200,
+            "ancestors": [
+                {"pid": 4200, "exe": "cmd.exe"},
+                {"pid": 4100, "exe": "windowsterminal.exe"},
+            ],
         });
         let state = run(&[(payload(raw), T0)]);
 
         let terminal = state.terminal.expect("terminal metadata");
         assert_eq!(terminal.hook_pid, 4242);
-        assert_eq!(terminal.parent_pid, Some(4200));
+        assert_eq!(terminal.ancestors.len(), 2);
+        assert_eq!(terminal.ancestors[1].exe, "windowsterminal.exe");
         assert_eq!(terminal.env["WT_SESSION"], json!("synthetic-guid"));
     }
 

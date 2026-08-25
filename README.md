@@ -73,11 +73,11 @@ without going back to the terminal:
   card, a card you have seen collapses on its own, and there is no window at
   all when nothing is being asked. Drag one somewhere better and it remembers.
 - **Jump back to the session** — a click on a panel row brings the terminal
-  window that owns the session to the front. The hook reports which process
-  spawned it, and Atoll follows the process ancestry to the window at click
-  time — so with several Windows Terminal windows open, the session's own
-  window is the one that rises. Rows whose terminal is unknown draw no
-  affordance and eat no clicks.
+  window that owns the session to the front. The hook records the chain of
+  processes above it while every link is alive, and a click raises the
+  nearest of them still running with a window — so with several Windows
+  Terminal windows open, the session's own window is the one that rises. Rows
+  whose terminal is unknown draw no affordance and eat no clicks.
 - **One Atoll at a time** — starting Atoll replaces whatever Atoll is already
   running rather than refusing to start, so a shortcut double-clicked twice, or
   a freshly built binary, never leaves two of them fighting over the pipe.

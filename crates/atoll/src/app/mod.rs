@@ -649,21 +649,24 @@ impl App {
 
     /// Jump back to the terminal that owns a session.
     ///
-    /// The anchor is the agent CLI's pid, captured by the hook as its own
-    /// parent; the rest of the ancestry is resolved now rather than at event
-    /// time, because it is cheap and because resolving late survives anything
-    /// that happened to the process tree in between. Closing the flyout only
-    /// on success keeps the panel around to try another row when a terminal
-    /// has quietly gone away.
+    /// The hook captured its process ancestry while the chain was alive;
+    /// what remains of it now — typically the CLI, the shell, and the
+    /// terminal host — is matched against the live process table and the
+    /// nearest survivor with a window is raised. Closing the flyout only on
+    /// success keeps the panel around to try another row when a terminal has
+    /// quietly gone away.
     fn jump(self: &Rc<Self>, session_id: &str) {
-        let target = self
+        let ancestors = self
             .table
             .borrow()
             .get(session_id)
             .and_then(|state| state.terminal.as_ref())
-            .and_then(|terminal| terminal.parent_pid);
-        let Some(pid) = target else { return };
-        if win::activate_terminal_of(pid) {
+            .map(|terminal| terminal.ancestors.clone())
+            .unwrap_or_default();
+        if ancestors.is_empty() {
+            return;
+        }
+        if win::activate_terminal_from(&ancestors) {
             self.close_flyout();
         }
     }
@@ -873,8 +876,7 @@ impl App {
                     jumpable: state
                         .terminal
                         .as_ref()
-                        .and_then(|terminal| terminal.parent_pid)
-                        .is_some(),
+                        .is_some_and(|terminal| !terminal.ancestors.is_empty()),
                 }
             })
             .collect()

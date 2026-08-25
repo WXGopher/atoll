@@ -37,12 +37,13 @@ order is closer to "what is worth doing" than to "what happens first".
   it.
 - **Jumping back to a session's terminal.** A session row in the panel is a
   door: click it and the terminal window that owns the session comes to the
-  front. The hook sends its parent pid — the agent CLI, which lives as long as
-  the session — and at click time Atoll walks the process ancestry from there
-  to the first ancestor with a real window. Windows Terminal keeps one process
-  per window, so with several open the walk lands on the right one; VS Code's
-  integrated terminal resolves through the pty host the same way. Rows whose
-  terminal is unknown draw no affordance and eat no clicks.
+  front. The hook records its process ancestry — pids and executable names —
+  at event time, the one moment the whole chain is certainly alive; a click
+  raises the nearest entry still running the same executable that owns a real
+  window. Windows Terminal keeps one process per window, so with several open
+  the right one rises; VS Code's integrated terminal resolves through the pty
+  host the same way. Rows whose terminal is unknown draw no affordance and
+  eat no clicks.
 
 ## Next: platform work
 

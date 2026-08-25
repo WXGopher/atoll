@@ -509,29 +509,22 @@ pub fn detach_console() {
     }
 }
 
-/// One process, as the ancestry walk sees it: who spawned it, and what it is.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProcessInfo {
-    pub parent: u32,
-    /// Executable file name only, lowercased: `"windowsterminal.exe"`.
-    pub exe: String,
-}
-
 /// Bring the terminal window that owns a session to the foreground.
 ///
-/// `cli_pid` is the agent CLI's process id, captured by the hook (its own
-/// parent) and alive as long as the session is. The walk goes upward from
-/// there: for a Windows Terminal tab the shell's parent is exactly the
-/// `WindowsTerminal.exe` process hosting that tab's window — each window is its
-/// own process — which is what makes this pick the right window when several
-/// are open. VS Code's integrated terminal resolves the same way, through the
-/// windowless pty host to the main `Code.exe`.
+/// `ancestors` is the hook's process ancestry, nearest first, captured while
+/// the whole chain was alive — the transient shell in it is long dead by now,
+/// and that is fine: the first entry that is *still* running the *same*
+/// executable and owns a real window is the one to raise. For a Windows
+/// Terminal tab that is exactly the `WindowsTerminal.exe` hosting it — each
+/// window is its own process — which is what picks the right window when
+/// several are open. VS Code's integrated terminal resolves the same way,
+/// through the windowless pty host to the main `Code.exe`.
 ///
-/// Returns false when the chain leads to no window: the terminal is gone, the
-/// PID was reused, or the session never had one.
-pub fn activate_terminal_of(cli_pid: u32) -> bool {
-    let table = process_table();
-    for pid in terminal_ancestors(&table, cli_pid, std::process::id()) {
+/// Returns false when nothing in the chain still has a window: the terminal
+/// is gone, or the session predates the ancestry-carrying hook.
+pub fn activate_terminal_from(ancestors: &[atoll_core::protocol::ProcessRef]) -> bool {
+    let alive = process_exes();
+    for pid in live_candidates(&alive, ancestors, std::process::id()) {
         if let Some(window) = main_window_of(pid) {
             return activate(window);
         }
@@ -539,40 +532,32 @@ pub fn activate_terminal_of(cli_pid: u32) -> bool {
     false
 }
 
-/// The ancestors of `start` worth asking for a window, nearest first,
-/// `start` itself included.
+/// The entries of `ancestors` still worth asking for a window, nearest first.
 ///
-/// The walk stops at `explorer.exe` without including it: the shell is
-/// everyone's ancestor and owns the desktop and the taskbar, so matching it
-/// would "jump" to the wrong window with great confidence. The visited set
-/// guards against the parent cycles PID reuse can manufacture.
-pub(crate) fn terminal_ancestors(
-    table: &HashMap<u32, ProcessInfo>,
-    start: u32,
+/// An entry counts only while a process with its pid is running its exe —
+/// "same pid, same name" is the guard against PID reuse handing the click to
+/// an innocent bystander. `explorer.exe` never counts (it is everyone's
+/// ancestor and owns the desktop), and neither do we.
+pub(crate) fn live_candidates(
+    alive: &HashMap<u32, String>,
+    ancestors: &[atoll_core::protocol::ProcessRef],
     self_pid: u32,
 ) -> Vec<u32> {
-    let mut chain = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    let mut current = start;
-    for _ in 0..16 {
-        if current <= 4 || current == self_pid || !seen.insert(current) {
-            break;
-        }
-        let Some(info) = table.get(&current) else {
-            break;
-        };
-        if info.exe == "explorer.exe" {
-            break;
-        }
-        chain.push(current);
-        current = info.parent;
-    }
-    chain
+    ancestors
+        .iter()
+        .filter(|entry| {
+            entry.pid > 4
+                && entry.pid != self_pid
+                && entry.exe != "explorer.exe"
+                && alive.get(&entry.pid) == Some(&entry.exe)
+        })
+        .map(|entry| entry.pid)
+        .collect()
 }
 
-/// Every live process's parent and executable name, from one Toolhelp
+/// Every live process's executable name, lowercased, from one Toolhelp
 /// snapshot — a consistent point-in-time view of the process tree.
-fn process_table() -> HashMap<u32, ProcessInfo> {
+fn process_exes() -> HashMap<u32, String> {
     let mut table = HashMap::new();
     let Ok(snapshot) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) else {
         return table;
@@ -590,10 +575,7 @@ fn process_table() -> HashMap<u32, ProcessInfo> {
                 .unwrap_or(entry.szExeFile.len());
             table.insert(
                 entry.th32ProcessID,
-                ProcessInfo {
-                    parent: entry.th32ParentProcessID,
-                    exe: String::from_utf16_lossy(&entry.szExeFile[..len]).to_lowercase(),
-                },
+                String::from_utf16_lossy(&entry.szExeFile[..len]).to_lowercase(),
             );
             if unsafe { Process32NextW(snapshot, &mut entry) }.is_err() {
                 break;
@@ -668,60 +650,72 @@ fn activate(handle: isize) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProcessInfo, terminal_ancestors};
+    use super::live_candidates;
+    use atoll_core::protocol::ProcessRef;
     use std::collections::HashMap;
 
-    fn table(entries: &[(u32, u32, &str)]) -> HashMap<u32, ProcessInfo> {
+    fn chain(entries: &[(u32, &str)]) -> Vec<ProcessRef> {
         entries
             .iter()
-            .map(|&(pid, parent, exe)| {
-                (
-                    pid,
-                    ProcessInfo {
-                        parent,
-                        exe: exe.to_string(),
-                    },
-                )
+            .map(|&(pid, exe)| ProcessRef {
+                pid,
+                exe: exe.to_string(),
             })
             .collect()
     }
 
+    fn alive(entries: &[(u32, &str)]) -> HashMap<u32, String> {
+        entries
+            .iter()
+            .map(|&(pid, exe)| (pid, exe.to_string()))
+            .collect()
+    }
+
     #[test]
-    fn the_walk_climbs_from_the_cli_to_the_terminal_host() {
-        // claude(node) <- pwsh <- WindowsTerminal <- explorer.
-        let table = table(&[
-            (100, 90, "node.exe"),
-            (90, 80, "pwsh.exe"),
-            (80, 70, "windowsterminal.exe"),
-            (70, 4, "explorer.exe"),
+    fn the_dead_spawn_shell_is_skipped_and_the_terminal_found() {
+        // cmd died with the hook; the CLI, the shell and WT live on.
+        let ancestors = chain(&[
+            (95, "cmd.exe"),
+            (90, "node.exe"),
+            (85, "pwsh.exe"),
+            (80, "windowsterminal.exe"),
         ]);
-        assert_eq!(terminal_ancestors(&table, 100, 9999), vec![100, 90, 80]);
+        let alive = alive(&[
+            (90, "node.exe"),
+            (85, "pwsh.exe"),
+            (80, "windowsterminal.exe"),
+        ]);
+        assert_eq!(live_candidates(&alive, &ancestors, 9999), vec![90, 85, 80]);
     }
 
     #[test]
-    fn explorer_is_never_a_candidate() {
-        let table = table(&[(100, 70, "pwsh.exe"), (70, 4, "explorer.exe")]);
-        assert_eq!(terminal_ancestors(&table, 100, 9999), vec![100]);
+    fn a_reused_pid_running_something_else_does_not_count() {
+        let ancestors = chain(&[(90, "pwsh.exe"), (80, "windowsterminal.exe")]);
+        // 90 came back as notepad: same pid, different life.
+        let alive = alive(&[(90, "notepad.exe"), (80, "windowsterminal.exe")]);
+        assert_eq!(live_candidates(&alive, &ancestors, 9999), vec![80]);
     }
 
     #[test]
-    fn a_parent_cycle_from_pid_reuse_terminates() {
-        let table = table(&[(100, 90, "node.exe"), (90, 100, "pwsh.exe")]);
-        assert_eq!(terminal_ancestors(&table, 100, 9999), vec![100, 90]);
+    fn explorer_ourselves_and_system_pids_never_count() {
+        let ancestors = chain(&[(4, "system"), (50, "atoll.exe"), (70, "explorer.exe")]);
+        let alive = alive(&[(4, "system"), (50, "atoll.exe"), (70, "explorer.exe")]);
+        assert_eq!(
+            live_candidates(&alive, &ancestors, 50),
+            Vec::<u32>::new()
+        );
     }
 
     #[test]
-    fn a_dead_parent_just_ends_the_chain() {
-        let table = table(&[(100, 90, "node.exe")]);
-        assert_eq!(terminal_ancestors(&table, 100, 9999), vec![100]);
-    }
-
-    #[test]
-    fn atoll_itself_and_system_pids_are_skipped() {
-        let table = table(&[(100, 50, "node.exe"), (50, 4, "atoll.exe")]);
-        // 50 is "us" here: the chain must not offer our own windows.
-        assert_eq!(terminal_ancestors(&table, 100, 50), vec![100]);
-        // And a chain that starts at a system pid offers nothing at all.
-        assert_eq!(terminal_ancestors(&table, 4, 50), Vec::<u32>::new());
+    fn an_empty_or_fully_dead_chain_offers_nothing() {
+        let ancestors = chain(&[(90, "pwsh.exe")]);
+        assert_eq!(
+            live_candidates(&HashMap::new(), &ancestors, 9999),
+            Vec::<u32>::new()
+        );
+        assert_eq!(
+            live_candidates(&HashMap::new(), &[], 9999),
+            Vec::<u32>::new()
+        );
     }
 }
