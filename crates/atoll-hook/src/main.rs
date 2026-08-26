@@ -344,7 +344,10 @@ mod tests {
         for entry in &chain {
             assert!(entry.pid > 4);
             assert_ne!(entry.pid, std::process::id());
-            assert!(entry.exe.ends_with(".exe"), "unexpected exe: {}", entry.exe);
+            // Not `.ends_with(".exe")`: GitHub's runners are ancestored by a
+            // bare "hosted-compute-agent", and the matcher only ever compares
+            // this name against the same name from a Toolhelp snapshot.
+            assert!(!entry.exe.is_empty());
             assert_eq!(entry.exe, entry.exe.to_lowercase());
             assert_ne!(entry.exe, "explorer.exe");
         }
