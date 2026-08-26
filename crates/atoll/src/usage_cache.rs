@@ -381,7 +381,9 @@ fn failure_stamp(now: u64, retry_secs: u64) -> u64 {
 /// recovery closes the entry so the log reads as episodes.
 fn note_fetch_failure(error: &std::io::Error) {
     let text = error.to_string();
-    let mut last = last_fetch_error().lock().unwrap_or_else(|held| held.into_inner());
+    let mut last = last_fetch_error()
+        .lock()
+        .unwrap_or_else(|held| held.into_inner());
     if *last != text {
         *last = text.clone();
         crate::util::debug_log(&format!("usage fetch failing: {text}"));
@@ -389,7 +391,9 @@ fn note_fetch_failure(error: &std::io::Error) {
 }
 
 fn note_fetch_recovered() {
-    let mut last = last_fetch_error().lock().unwrap_or_else(|held| held.into_inner());
+    let mut last = last_fetch_error()
+        .lock()
+        .unwrap_or_else(|held| held.into_inner());
     if !last.is_empty() {
         last.clear();
         crate::util::debug_log("usage fetch recovered");

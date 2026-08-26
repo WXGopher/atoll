@@ -1676,9 +1676,7 @@ fn agent_present(dir: &str) -> bool {
 /// Where the hand-made Startup shortcut lived, while it existed.
 fn legacy_startup_shortcut() -> Option<PathBuf> {
     let appdata = std::env::var_os("APPDATA")?;
-    Some(
-        PathBuf::from(appdata).join(r"Microsoft\Windows\Start Menu\Programs\Startup\Atoll.lnk"),
-    )
+    Some(PathBuf::from(appdata).join(r"Microsoft\Windows\Start Menu\Programs\Startup\Atoll.lnk"))
 }
 
 /// Remove the legacy shortcut, so the registry Run key is the one mechanism.

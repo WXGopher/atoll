@@ -162,12 +162,7 @@ pub struct AgentLine {
 /// what is true and no room for a placeholder per agent. When that leaves
 /// nothing at all, one dash stands in, because a readout that vanishes reads
 /// as broken.
-pub fn chips(
-    usage: &UsageSnapshot,
-    lines: &[AgentLine],
-    good_at: i64,
-    warn_at: i64,
-) -> Vec<Chip> {
+pub fn chips(usage: &UsageSnapshot, lines: &[AgentLine], good_at: i64, warn_at: i64) -> Vec<Chip> {
     let mut chips: Vec<Chip> = lines
         .iter()
         .filter(|line| line.show)
@@ -233,18 +228,18 @@ pub fn bar_size(blocks: &[AgentTasks], along: Along) -> (f32, f32) {
         Along::Vertical => (
             PADDING * 2.0 + blocks.iter().map(block_width).fold(chip_width, f32::max),
             PADDING * 2.0
-                + blocks.iter().map(block_height).sum::<f32>().max(CHIP_HEIGHT)
+                + blocks
+                    .iter()
+                    .map(block_height)
+                    .sum::<f32>()
+                    .max(CHIP_HEIGHT)
                 + (count - 1.0) * BLOCK_GAP,
         ),
         Along::Horizontal => (
             PADDING * 2.0
                 + blocks.iter().map(block_width).sum::<f32>().max(chip_width)
                 + (count - 1.0) * CHIP_SPACING,
-            PADDING * 2.0
-                + blocks
-                    .iter()
-                    .map(block_height)
-                    .fold(CHIP_HEIGHT, f32::max),
+            PADDING * 2.0 + blocks.iter().map(block_height).fold(CHIP_HEIGHT, f32::max),
         ),
     }
 }
@@ -417,13 +412,18 @@ impl TaskbarView {
             .collect();
         // Nothing changed, so nothing is redrawn: this runs on every tick.
         let unchanged = self.ui.get_chips().row_count() == rows.len()
-            && self.ui.get_chips().iter().zip(rows.iter()).all(|(old, new)| {
-                old.value == new.value
-                    && old.agent == new.agent
-                    && old.pending == new.pending
-                    && old.running == new.running
-                    && old.done == new.done
-            });
+            && self
+                .ui
+                .get_chips()
+                .iter()
+                .zip(rows.iter())
+                .all(|(old, new)| {
+                    old.value == new.value
+                        && old.agent == new.agent
+                        && old.pending == new.pending
+                        && old.running == new.running
+                        && old.done == new.done
+                });
         if unchanged && self.ui.get_vertical() == along.is_vertical() {
             return;
         }
@@ -763,7 +763,10 @@ mod tests {
         let unread = chips(&UsageSnapshot::default(), &lines(1, 0), GOOD, WARN);
         assert_eq!(unread.len(), 1);
         assert_eq!(unread[0].agent, Some(HookSource::Claude));
-        assert_eq!((unread[0].value.as_str(), unread[0].tasks.running), ("--", 1));
+        assert_eq!(
+            (unread[0].value.as_str(), unread[0].tasks.running),
+            ("--", 1)
+        );
 
         // A block with nothing but finished sessions still shows its line — a
         // turn that ended while the user was elsewhere is the readout's whole

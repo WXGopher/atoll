@@ -199,8 +199,7 @@ mod ancestry {
             if chain.iter().any(|entry| entry.pid == pid) {
                 break;
             }
-            let handle =
-                unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+            let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
             if handle == 0 {
                 break;
             }
@@ -236,17 +235,15 @@ mod ancestry {
                 &raw mut written,
             )
         };
-        (status == 0)
-            .then(|| u32::try_from(info.inherited_from_unique_process_id).ok())?
+        (status == 0).then(|| u32::try_from(info.inherited_from_unique_process_id).ok())?
     }
 
     /// The executable's file name, lowercased: `"windowsterminal.exe"`.
     fn exe_name(handle: isize) -> Option<String> {
         let mut buffer = [0u16; 512];
         let mut length = buffer.len() as u32;
-        let ok = unsafe {
-            QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &raw mut length)
-        };
+        let ok =
+            unsafe { QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &raw mut length) };
         if ok == 0 {
             return None;
         }

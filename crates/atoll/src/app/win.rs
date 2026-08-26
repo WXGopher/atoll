@@ -87,7 +87,12 @@ pub fn popup_menu(owner: isize, labels: &[&str]) -> Option<usize> {
             None,
         );
         let _ = DestroyMenu(menu);
-        let _ = PostMessageW(Some(window), WM_NULL, Default::default(), Default::default());
+        let _ = PostMessageW(
+            Some(window),
+            WM_NULL,
+            Default::default(),
+            Default::default(),
+        );
 
         let id = picked.0 as usize;
         if id == 0 { None } else { Some(id - 1) }
@@ -542,7 +547,11 @@ pub fn activate_terminal_from(
         crate::util::debug_log(&format!(
             "jump: {pid} ({exe}) window \"{}\" -> {}",
             title_of(window),
-            if activated { "activated" } else { "foreground refused" },
+            if activated {
+                "activated"
+            } else {
+                "foreground refused"
+            },
         ));
         // The window is up; in a tabbed, split terminal the session may still
         // be behind another tab or another pane. Pane first — focusing the
@@ -573,39 +582,35 @@ pub fn activate_terminal_from(
 /// things anyway. Every outcome is logged.
 fn select_terminal_tab(window: isize, hint: &str) {
     use windows::Win32::UI::Accessibility::{
-        IUIAutomationSelectionItemPattern, TreeScope_Descendants, UIA_SelectionItemPatternId,
-        UIA_TabItemControlTypeId, UIA_ControlTypePropertyId,
+        IUIAutomationSelectionItemPattern, TreeScope_Descendants, UIA_ControlTypePropertyId,
+        UIA_SelectionItemPatternId, UIA_TabItemControlTypeId,
     };
     use windows::core::Interface;
 
-    let result: windows::core::Result<()> = (|| {
-        unsafe {
-            let automation = ui_automation()?;
-            let root = automation.ElementFromHandle(hwnd(window))?;
-            let condition = automation.CreatePropertyCondition(
-                UIA_ControlTypePropertyId,
-                &variant_i4(UIA_TabItemControlTypeId.0),
-            )?;
-            let tabs = root.FindAll(TreeScope_Descendants, &condition)?;
-            let count = tabs.Length()?;
-            let mut names = Vec::with_capacity(count as usize);
-            for index in 0..count {
-                names.push(tabs.GetElement(index)?.CurrentName()?.to_string());
-            }
-            let Some(picked) = pick_tab(&names, hint) else {
-                crate::util::debug_log(&format!(
-                    "jump: no tab matched \"{hint}\" among {names:?}"
-                ));
-                return Ok(());
-            };
-            let pattern: IUIAutomationSelectionItemPattern = tabs
-                .GetElement(picked as i32)?
-                .GetCurrentPattern(UIA_SelectionItemPatternId)?
-                .cast()?;
-            pattern.Select()?;
-            crate::util::debug_log(&format!("jump: tab \"{}\" selected", names[picked]));
-            Ok(())
+    let result: windows::core::Result<()> = (|| unsafe {
+        let automation = ui_automation()?;
+        let root = automation.ElementFromHandle(hwnd(window))?;
+        let condition = automation.CreatePropertyCondition(
+            UIA_ControlTypePropertyId,
+            &variant_i4(UIA_TabItemControlTypeId.0),
+        )?;
+        let tabs = root.FindAll(TreeScope_Descendants, &condition)?;
+        let count = tabs.Length()?;
+        let mut names = Vec::with_capacity(count as usize);
+        for index in 0..count {
+            names.push(tabs.GetElement(index)?.CurrentName()?.to_string());
         }
+        let Some(picked) = pick_tab(&names, hint) else {
+            crate::util::debug_log(&format!("jump: no tab matched \"{hint}\" among {names:?}"));
+            return Ok(());
+        };
+        let pattern: IUIAutomationSelectionItemPattern = tabs
+            .GetElement(picked as i32)?
+            .GetCurrentPattern(UIA_SelectionItemPatternId)?
+            .cast()?;
+        pattern.Select()?;
+        crate::util::debug_log(&format!("jump: tab \"{}\" selected", names[picked]));
+        Ok(())
     })();
     if let Err(error) = result {
         crate::util::debug_log(&format!("jump: tab selection failed: {error}"));
@@ -663,8 +668,8 @@ fn variant_i4(value: i32) -> windows::Win32::System::Variant::VARIANT {
 fn focus_terminal_pane(window: isize, hint: &str) -> bool {
     use windows::Win32::UI::Accessibility::{
         IUIAutomationTextPattern, TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start,
-        TextUnit_Character, TreeScope_Descendants, UIA_TextControlTypeId,
-        UIA_ControlTypePropertyId, UIA_TextPatternId,
+        TextUnit_Character, TreeScope_Descendants, UIA_ControlTypePropertyId,
+        UIA_TextControlTypeId, UIA_TextPatternId,
     };
     use windows::core::Interface;
 
@@ -684,7 +689,7 @@ fn focus_terminal_pane(window: isize, hint: &str) -> bool {
                 let element = texts.GetElement(index)?;
                 // Tab labels are Text elements too; the panes are the
                 // TermControls.
-                if element.CurrentClassName()?.to_string() != "TermControl" {
+                if element.CurrentClassName()? != "TermControl" {
                     continue;
                 }
                 let pattern: IUIAutomationTextPattern =
@@ -761,7 +766,8 @@ pub(crate) fn pick_pane(screens: &[String], hint: &str) -> Option<usize> {
 pub(crate) fn normalize_pane_text(text: &str) -> String {
     text.chars()
         .filter(|c| {
-            !c.is_whitespace() && !matches!(c, '*' | '_' | '`' | '#' | '>' | '|' | '-' | '…' | '·' | '•')
+            !c.is_whitespace()
+                && !matches!(c, '*' | '_' | '`' | '#' | '>' | '|' | '-' | '…' | '·' | '•')
         })
         .flat_map(char::to_lowercase)
         .collect()
@@ -902,7 +908,10 @@ fn main_window_of(pid: u32) -> Option<isize> {
         found: HWND(std::ptr::null_mut()),
     };
     unsafe {
-        let _ = EnumWindows(Some(match_main_window), LPARAM(&mut context as *mut _ as isize));
+        let _ = EnumWindows(
+            Some(match_main_window),
+            LPARAM(&mut context as *mut _ as isize),
+        );
     }
     (!context.found.0.is_null()).then_some(context.found.0 as isize)
 }
@@ -1005,10 +1014,7 @@ mod tests {
     fn explorer_ourselves_and_system_pids_never_count() {
         let ancestors = chain(&[(4, "system"), (50, "atoll.exe"), (70, "explorer.exe")]);
         let alive = alive(&[(4, "system"), (50, "atoll.exe"), (70, "explorer.exe")]);
-        assert_eq!(
-            live_candidates(&alive, &ancestors, 50),
-            Vec::<u32>::new()
-        );
+        assert_eq!(live_candidates(&alive, &ancestors, 50), Vec::<u32>::new());
     }
 
     #[test]
@@ -1084,7 +1090,10 @@ mod tests {
     #[test]
     fn a_scrolled_away_message_matches_nothing() {
         let screens = screens(&["✶ running tools · 4m · ↓64k tokens"]);
-        assert_eq!(super::pick_pane(&screens, "the message that scrolled off"), None);
+        assert_eq!(
+            super::pick_pane(&screens, "the message that scrolled off"),
+            None
+        );
     }
 
     #[test]

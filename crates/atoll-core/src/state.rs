@@ -539,7 +539,11 @@ mod tests {
             HookSource::Claude,
             T0,
         );
-        table.apply(&table_payload("c-done", events::STOP), HookSource::Claude, T0);
+        table.apply(
+            &table_payload("c-done", events::STOP),
+            HookSource::Claude,
+            T0,
+        );
         let mut waiting = permission_request("Bash", Some("tu-1"));
         waiting.session_id = Some("c-wait".into());
         table.apply(&waiting, HookSource::Claude, T0);
