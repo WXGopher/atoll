@@ -57,7 +57,7 @@ export component FlyoutWindow inherits Window {
 
             Text {
                 text: root.sessions.length == 0
-                    ? "No active sessions"
+                    ? "No sessions detected"
                     : root.sessions.length + (root.sessions.length == 1 ? " session" : " sessions");
                 color: Theme.faint;
                 font-size: 11px;

@@ -341,13 +341,17 @@ impl TaskbarView {
 
     /// Ask Slint to paint the readout again.
     ///
-    /// On this machine, another Atoll window being mapped or unmapped can cost
-    /// the readout its last frame — the same fault family as the pointer-event
-    /// loss described in this module's header, but on the rendering side. The
-    /// renderer itself stays healthy, so one repaint on request is a full
-    /// recovery.
+    /// Native moves and show/hide cycles happen outside Slint. Invalidate the
+    /// client area as well as scheduling a frame, so an already-pending Slint
+    /// request cannot leave Windows displaying stale pixels. Do not erase the
+    /// transparent background separately: that would flash a solid strip.
     pub fn request_redraw(&self) {
-        self.ui.window().request_redraw();
+        if self.shown.get() {
+            self.ui.window().request_redraw();
+            if let Some(handle) = self.handle.get() {
+                win::invalidate_window(handle);
+            }
+        }
     }
 
     fn scale(&self) -> f32 {
@@ -357,6 +361,12 @@ impl TaskbarView {
 
     /// The readout's on-screen size in physical pixels.
     pub fn physical_size(&self) -> (i32, i32) {
+        // Use the actual window size once it exists. Backends differ in how
+        // they round fractional scales, and native resizing can lag a request.
+        let actual = self.ui.window().size();
+        if self.shown.get() && actual.width > 0 && actual.height > 0 {
+            return (actual.width as i32, actual.height as i32);
+        }
         let (width, height) = self.size.get();
         let scale = self.scale();
         (
@@ -371,10 +381,19 @@ impl TaskbarView {
         }
         if self.ui.show().is_ok() {
             self.shown.set(true);
-            // The OS window is new, so whatever we did to the old one is gone.
-            self.handle.set(None);
-            self.host.set(None);
-            self.embedded.set(false);
+            // Windows normally keeps the native window across hide/show. Its
+            // embedded child is absent from EnumWindows, so retain the handle
+            // and parent unless the backend actually replaced the window.
+            if self
+                .handle
+                .get()
+                .is_some_and(|handle| !win::window_has_title(handle, WINDOW_TITLE))
+            {
+                self.handle.set(None);
+                self.host.set(None);
+                self.embedded.set(false);
+            }
+            self.request_redraw();
         }
     }
 
@@ -384,9 +403,8 @@ impl TaskbarView {
         }
         let _ = self.ui.hide();
         self.shown.set(false);
-        self.handle.set(None);
-        self.host.set(None);
-        self.embedded.set(false);
+        self.pressed_left.set(false);
+        self.pressed_right.set(false);
     }
 
     /// Put `chips` in the window and resize it to fit them.
@@ -420,6 +438,7 @@ impl TaskbarView {
                 .all(|(old, new)| {
                     old.value == new.value
                         && old.agent == new.agent
+                        && old.tier == new.tier
                         && old.pending == new.pending
                         && old.running == new.running
                         && old.done == new.done
@@ -437,6 +456,7 @@ impl TaskbarView {
         self.ui
             .window()
             .set_size(slint::LogicalSize::new(size.0, size.1));
+        self.request_redraw();
     }
 
     /// Advance the animated marks to `phase` (0..1), but only while something
@@ -464,6 +484,9 @@ impl TaskbarView {
                 let Some(handle) = win::window_by_title(WINDOW_TITLE) else {
                     return false;
                 };
+                if !win::prepare_readout(handle, false) {
+                    return false;
+                }
                 self.handle.set(Some(handle));
                 win::hide_from_taskbar(handle);
                 handle
@@ -484,6 +507,7 @@ impl TaskbarView {
         if host_changed || orphaned {
             self.embedded.set(win::embed_in(handle, taskbar.handle));
             self.host.set(Some(taskbar.handle));
+            self.request_redraw();
         }
 
         self.place(taskbar);
@@ -566,19 +590,23 @@ impl TaskbarView {
         };
         let offset = self.offset_in(taskbar);
 
-        if self.embedded.get() {
+        let moved = if self.embedded.get() {
             // A child window's position is its parent's client space, and the
             // taskbar's client origin is not always its window origin.
             let (client_x, client_y) =
                 win::to_client(taskbar.handle, taskbar.rect.left, taskbar.rect.top);
-            win::move_window(handle, offset.0 + client_x, offset.1 + client_y);
+            win::move_window(handle, offset.0 + client_x, offset.1 + client_y)
         } else {
-            win::move_window(
+            let moved = win::move_window(
                 handle,
                 taskbar.rect.left + offset.0,
                 taskbar.rect.top + offset.1,
             );
             win::keep_on_top(handle);
+            moved
+        };
+        if moved {
+            self.request_redraw();
         }
     }
 
@@ -594,6 +622,9 @@ impl TaskbarView {
         }
     }
 }
+
+#[cfg(test)]
+mod render_tests;
 
 #[cfg(test)]
 mod tests {

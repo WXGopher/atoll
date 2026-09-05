@@ -88,6 +88,17 @@ impl Tray {
         let _ = self.handle.set_tooltip(Some(text));
     }
 
+    pub fn contains_point(&self, x: i32, y: i32) -> bool {
+        self.handle.rect().is_some_and(|rect| {
+            let left = rect.position.x.round() as i32;
+            let top = rect.position.y.round() as i32;
+            x >= left
+                && y >= top
+                && x < left + rect.size.width as i32
+                && y < top + rect.size.height as i32
+        })
+    }
+
     /// Everything the tray has heard since the last call.
     pub fn poll(&self) -> Vec<TrayCommand> {
         let mut commands = Vec::new();

@@ -7,7 +7,8 @@ use std::collections::HashMap;
 
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
-    HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, ScreenToClient,
+    HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, RDW_INVALIDATE, RDW_NOERASE,
+    RedrawWindow, ScreenToClient,
 };
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
@@ -15,9 +16,17 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 use windows::Win32::System::Registry::{
     HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON,
+};
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{BOOL, PCWSTR};
+
+mod readout;
+pub use readout::prepare as prepare_readout;
+
+#[cfg(test)]
+mod readout_tests;
 
 /// A screen rectangle in physical pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +55,27 @@ pub fn left_button_down() -> bool {
 /// As [`left_button_down`], for the right button.
 pub fn right_button_down() -> bool {
     unsafe { GetAsyncKeyState(VK_RBUTTON.0 as i32) as u16 & 0x8000 != 0 }
+}
+
+pub fn mouse_buttons_down() -> u8 {
+    u8::from(left_button_down())
+        | (u8::from(right_button_down()) << 1)
+        | (u8::from(unsafe { GetAsyncKeyState(VK_MBUTTON.0 as i32) } as u16 & 0x8000 != 0) << 2)
+}
+
+pub fn foreground_window() -> Option<isize> {
+    let window = unsafe { GetForegroundWindow() };
+    (!window.is_invalid()).then_some(window.0 as isize)
+}
+
+/// A native child control counts as being inside its containing panel too.
+pub fn within_window(window: Option<isize>, container: Option<isize>) -> bool {
+    match (window, container) {
+        (Some(window), Some(container)) => {
+            window == container || unsafe { IsChild(hwnd(container), hwnd(window)) }.as_bool()
+        }
+        _ => false,
+    }
 }
 
 /// A native context menu at the cursor, blocking until the user picks or
@@ -158,6 +188,13 @@ pub fn window_by_title(title: &str) -> Option<isize> {
         let _ = EnumWindows(Some(match_title), LPARAM(&mut context as *mut _ as isize));
     }
     (!context.found.0.is_null()).then_some(context.found.0 as isize)
+}
+
+/// Check a cached handle without confusing a reused handle with our readout.
+pub fn window_has_title(handle: isize, title: &str) -> bool {
+    let mut process = 0;
+    unsafe { GetWindowThreadProcessId(hwnd(handle), Some(&mut process)) };
+    process == std::process::id() && title_of(handle) == title
 }
 
 fn hwnd(handle: isize) -> HWND {
@@ -367,24 +404,22 @@ pub fn taskbar() -> Option<Taskbar> {
     })
 }
 
-/// Make `child` a child window of `parent`, and report whether it took.
+/// Make the frameless readout a child of `parent`, and report whether it took.
 ///
-/// Two calls, not one: `SetParent` alone leaves a popup that is parented but
-/// still styled as a top-level window, which the shell paints over the moment
-/// it redraws. `WS_CHILD` is what makes it part of the taskbar's own drawing.
+/// SetParent needs WS_CHILD and a genuinely absent native frame. The readout
+/// guard also preserves these styles when the window backend updates its flags.
 pub fn embed_in(child: isize, parent: isize) -> bool {
     let child = hwnd(child);
     let parent = hwnd(parent);
     unsafe {
         let style = GetWindowLongPtrW(child, GWL_STYLE);
-        SetWindowLongPtrW(
-            child,
-            GWL_STYLE,
-            (style | WS_CHILD.0 as isize) & !(WS_POPUP.0 as isize),
-        );
+        if !prepare_readout(child.0 as isize, true) {
+            return false;
+        }
         if SetParent(child, Some(parent)).is_err() {
             // Put the style back rather than leaving a top-level window
             // claiming to be somebody's child.
+            prepare_readout(child.0 as isize, style & WS_CHILD.0 as isize != 0);
             SetWindowLongPtrW(child, GWL_STYLE, style);
             return false;
         }
@@ -408,20 +443,41 @@ pub fn parent_of(handle: isize) -> Option<isize> {
     (!parent.is_invalid()).then_some(parent.0 as isize)
 }
 
+/// Queue a full native paint without a separate background erase or re-entrant
+/// rendering. This also recovers a redraw lost during native window changes.
+pub fn invalidate_window(handle: isize) {
+    let _ = unsafe { RedrawWindow(Some(hwnd(handle)), None, None, RDW_INVALIDATE | RDW_NOERASE) };
+}
+
 /// Move a window without resizing, activating, or re-ordering it. Coordinates
 /// are the parent's client space for an embedded window and the screen's for a
-/// top-level one, which is exactly `SetWindowPos`'s own rule.
-pub fn move_window(handle: isize, x: i32, y: i32) {
+/// top-level one, which is exactly `SetWindowPos`'s own rule. An unchanged
+/// position is a no-op; `true` means the caller needs to repaint after a move.
+pub fn move_window(handle: isize, x: i32, y: i32) -> bool {
+    if let Some(rect) = rect_of(hwnd(handle)) {
+        let position =
+            if unsafe { GetWindowLongPtrW(hwnd(handle), GWL_STYLE) } & WS_CHILD.0 as isize != 0 {
+                parent_of(handle).map(|parent| to_client(parent, rect.left, rect.top))
+            } else {
+                Some((rect.left, rect.top))
+            };
+        if position == Some((x, y)) {
+            return false;
+        }
+    }
     unsafe {
-        let _ = SetWindowPos(
+        SetWindowPos(
             hwnd(handle),
             None,
             x,
             y,
             0,
             0,
-            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-        );
+            // Copying the old screen pixels can carry shell paint into the
+            // readout. Its caller requests a complete fresh frame instead.
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS,
+        )
+        .is_ok()
     }
 }
 
@@ -967,6 +1023,59 @@ mod tests {
     use super::live_candidates;
     use atoll_core::protocol::ProcessRef;
     use std::collections::HashMap;
+
+    #[test]
+    fn readout_moves_only_when_its_position_changes_in_the_right_coordinate_space() {
+        use super::*;
+
+        struct TestWindow(HWND);
+        impl Drop for TestWindow {
+            fn drop(&mut self) {
+                let _ = unsafe { DestroyWindow(self.0) };
+            }
+        }
+        let create = |style, parent| {
+            TestWindow(unsafe {
+                CreateWindowExW(
+                    WINDOW_EX_STYLE::default(),
+                    windows::core::w!("STATIC"),
+                    PCWSTR::null(),
+                    style,
+                    100,
+                    200,
+                    200,
+                    200,
+                    parent,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap()
+            })
+        };
+        // Hidden test windows only. The real taskbar is never touched.
+        let parent = create(WS_POPUP, None);
+        for (style, owner) in [
+            (WS_POPUP, None),
+            (WS_POPUP, Some(parent.0)),
+            (WS_CHILD, Some(parent.0)),
+        ] {
+            let window = create(style, owner);
+            let handle = window.0.0 as isize;
+            assert!(!move_window(handle, 100, 200));
+            assert!(move_window(handle, 30, 40));
+            assert!(!move_window(handle, 30, 40));
+            let rect = rect_of(window.0).unwrap();
+            let position = if style == WS_CHILD {
+                to_client(parent.0.0 as isize, rect.left, rect.top)
+            } else {
+                (rect.left, rect.top)
+            };
+            assert_eq!(position, (30, 40));
+            assert_eq!((rect.right - rect.left, rect.bottom - rect.top), (200, 200));
+            assert!(!unsafe { IsWindowVisible(window.0) }.as_bool());
+        }
+    }
 
     fn chain(entries: &[(u32, &str)]) -> Vec<ProcessRef> {
         entries

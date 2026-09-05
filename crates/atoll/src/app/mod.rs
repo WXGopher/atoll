@@ -29,8 +29,10 @@ mod bridge;
 mod card;
 mod cardview;
 pub(crate) mod config;
+mod flyout;
 mod icon;
 pub mod net;
+mod sessions;
 mod settings;
 mod taskbar;
 mod tray;
@@ -138,6 +140,7 @@ struct App {
     host: Cell<Option<win::Taskbar>>,
     flyout: ui::FlyoutWindow,
     flyout_open: Cell<bool>,
+    flyout_dismissal: RefCell<Option<flyout::Dismissal>>,
     /// The panel's OS window, once it has been taken out of the taskbar. Kept
     /// so that is done once and not once per opening: the tweak is a hide-and-
     /// show cycle, and running it on a window the user has just opened is a
@@ -147,6 +150,7 @@ struct App {
     tray: RefCell<Option<Tray>>,
 
     table: RefCell<SessionTable>,
+    codex_sessions: sessions::CodexWatcher,
     /// Hooks that are blocked on us, keyed by session and correlation key.
     /// Holding the handle is what keeps the agent waiting.
     blocked: RefCell<HashMap<(String, String), ConnectionHandle>>,
@@ -201,10 +205,12 @@ impl App {
             host: Cell::new(None),
             flyout,
             flyout_open: Cell::new(false),
+            flyout_dismissal: RefCell::new(None),
             flyout_handle: Cell::new(None),
             settings_window: RefCell::new(None),
             tray: RefCell::new(None),
             table: RefCell::new(SessionTable::new()),
+            codex_sessions: sessions::CodexWatcher::new(),
             blocked: RefCell::new(HashMap::new()),
             queue: RefCell::new(VecDeque::new()),
             current: RefCell::new(None),
@@ -295,6 +301,9 @@ impl App {
         self.flyout_handle.set(Some(handle));
         if self.flyout_open.get() {
             win::hide_from_taskbar(handle);
+            if let Some(dismissal) = self.flyout_dismissal.borrow_mut().as_mut() {
+                dismissal.rebase_foreground(win::foreground_window());
+            }
         } else {
             win::mark_tool_window(handle);
         }
@@ -411,8 +420,7 @@ impl App {
         });
     }
 
-    /// Watch the pointer over the taskbar readout: a click opens the detail
-    /// panel, a drag moves the readout along the bar.
+    /// Watch readout clicks and dismiss the details after an outside click.
     ///
     /// A poll rather than a callback, and the reason is worth knowing: see the
     /// header of [`taskbar`].
@@ -423,6 +431,7 @@ impl App {
             taskbar::POINTER_POLL,
             move || {
                 let Some(app) = app.upgrade() else { return };
+                app.poll_flyout_dismissal();
                 if !app.bar.is_shown() {
                     return;
                 }
@@ -439,6 +448,7 @@ impl App {
     /// in the same words. A native menu, so it dismisses like every other
     /// taskbar menu and never fights the panel for space.
     fn readout_menu(self: &Rc<Self>) {
+        self.close_flyout();
         let Some(handle) = self.bar.window_handle() else {
             return;
         };
@@ -459,6 +469,7 @@ impl App {
         // The title worker posts to the event loop the same way the pipe thread
         // does, so this is where its answers land too.
         let titles_arrived = self.collect_titles();
+        let sessions_arrived = self.codex_sessions.poll(&mut self.table.borrow_mut());
 
         let mut received = 0usize;
         while let Ok(event) = self.events.try_recv() {
@@ -468,7 +479,7 @@ impl App {
         if received > 0 {
             self.promote();
         }
-        if received > 0 || titles_arrived {
+        if received > 0 || titles_arrived || sessions_arrived {
             self.refresh();
         }
     }
@@ -930,6 +941,7 @@ impl App {
             usage.refreshed_at != before
         };
         let limits_arrived = self.collect_claude_limits(now);
+        let sessions_arrived = self.codex_sessions.poll(&mut self.table.borrow_mut());
 
         let before = self.table.borrow().counts(now);
         self.table.borrow_mut().sweep(now);
@@ -937,7 +949,7 @@ impl App {
 
         if self.current_is_stale() {
             self.dismiss();
-        } else if refreshed || limits_arrived || before != after {
+        } else if refreshed || limits_arrived || sessions_arrived || before != after {
             self.refresh();
         }
 
@@ -1118,6 +1130,11 @@ impl App {
             Ok(()) => {
                 self.flyout.window().request_redraw();
                 self.flyout_open.set(true);
+                self.adopt_flyout();
+                *self.flyout_dismissal.borrow_mut() = Some(flyout::Dismissal::new(
+                    win::foreground_window(),
+                    win::mouse_buttons_down(),
+                ));
                 self.log_jumpability();
                 self.start_title_scan();
                 // Somebody is about to read the numbers: get fresher ones than
@@ -1136,10 +1153,53 @@ impl App {
     }
 
     fn close_flyout(&self) {
+        self.flyout_dismissal.borrow_mut().take();
         if self.flyout_open.get() {
             let _ = self.flyout.hide();
             self.flyout_open.set(false);
             self.heal_readout();
+        }
+    }
+
+    fn poll_flyout_dismissal(&self) {
+        if !self.flyout_open.get() {
+            return;
+        }
+        self.adopt_flyout();
+        let buttons = win::mouse_buttons_down();
+        let foreground = win::foreground_window();
+        let point = win::cursor_position();
+        let under_pointer = point.and_then(|(x, y)| win::window_at(x, y));
+        let panel = self.flyout_handle.get();
+        let target = if win::within_window(under_pointer, panel) {
+            flyout::PointerTarget::Panel
+        } else if win::within_window(under_pointer, self.bar.window_handle())
+            || (buttons != 0
+                && point.is_some_and(|(x, y)| {
+                    self.tray
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|tray| tray.contains_point(x, y))
+                }))
+        {
+            flyout::PointerTarget::Launcher
+        } else {
+            flyout::PointerTarget::Outside
+        };
+        let close = self
+            .flyout_dismissal
+            .borrow_mut()
+            .as_mut()
+            .is_some_and(|dismissal| {
+                dismissal.should_close(
+                    foreground,
+                    buttons,
+                    target,
+                    win::within_window(foreground, panel),
+                )
+            });
+        if close {
+            self.close_flyout();
         }
     }
 

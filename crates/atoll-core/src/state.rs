@@ -35,7 +35,7 @@
 //! Its hook budget is a day rather than 45 seconds, which is the protocol saying
 //! the same thing.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
@@ -356,6 +356,8 @@ pub struct TableCounts {
 #[derive(Debug, Clone)]
 pub struct SessionTable {
     sessions: BTreeMap<String, SessionState>,
+    /// Sessions observed from disk, rather than received through a live hook.
+    observed: BTreeSet<String>,
     stale_after_secs: u64,
 }
 
@@ -369,6 +371,7 @@ impl SessionTable {
     pub fn new() -> Self {
         Self {
             sessions: BTreeMap::new(),
+            observed: BTreeSet::new(),
             stale_after_secs: STALE_AFTER_SECS,
         }
     }
@@ -389,6 +392,10 @@ impl SessionTable {
             .as_deref()
             .filter(|id| !id.is_empty())?
             .to_string();
+
+        // Live hooks take ownership; later disk snapshots must not overwrite
+        // an approval with the coarser state recorded in a rollout.
+        self.observed.remove(&session_id);
 
         if payload.event_name() == events::SESSION_END {
             self.sessions.remove(&session_id);
@@ -412,6 +419,7 @@ impl SessionTable {
         let stale_after = self.stale_after_secs;
         self.sessions
             .retain(|_, state| !state.is_stale(now, stale_after));
+        self.observed.retain(|id| self.sessions.contains_key(id));
         for state in self.sessions.values_mut() {
             state.prune_pending(now, PENDING_TTL_SECS);
         }
@@ -419,6 +427,40 @@ impl SessionTable {
 
     pub fn get(&self, session_id: &str) -> Option<&SessionState> {
         self.sessions.get(session_id)
+    }
+
+    /// Replace one agent's disk observations while preserving live hook state.
+    /// Repeated scans retain original event times and never extend liveness.
+    pub fn sync_observed(
+        &mut self,
+        source: HookSource,
+        sessions: Vec<SessionState>,
+        now: u64,
+    ) -> bool {
+        let mut seen = BTreeSet::new();
+        let mut changed = false;
+        for session in sessions {
+            if session.source != source || session.is_stale(now, self.stale_after_secs) {
+                continue;
+            }
+            let id = session.session_id.clone();
+            seen.insert(id.clone());
+            if self.sessions.contains_key(&id) && !self.observed.contains(&id) {
+                continue;
+            }
+            if self.sessions.get(&id) != Some(&session) {
+                self.sessions.insert(id.clone(), session);
+                changed = true;
+            }
+            self.observed.insert(id);
+        }
+        self.sessions.retain(|id, state| {
+            let remove = state.source == source && self.observed.contains(id) && !seen.contains(id);
+            changed |= remove;
+            !remove
+        });
+        self.observed.retain(|id| self.sessions.contains_key(id));
+        changed
     }
 
     pub fn get_mut(&mut self, session_id: &str) -> Option<&mut SessionState> {

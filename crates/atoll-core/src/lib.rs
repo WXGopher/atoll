@@ -6,6 +6,7 @@
 //! `atoll-hook` disables the default `server` feature, so everything outside
 //! [`server`] must stay free of heavyweight dependencies.
 
+pub mod codex;
 pub mod install;
 pub mod pipe;
 pub mod protocol;

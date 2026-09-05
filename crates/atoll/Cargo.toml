@@ -27,4 +27,5 @@ slint-build.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+slint = { workspace = true, features = ["unstable-winit-030"] }
 tempfile.workspace = true

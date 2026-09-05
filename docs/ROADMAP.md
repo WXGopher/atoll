@@ -26,6 +26,10 @@ order is closer to "what is worth doing" than to "what happens first".
   OAuth endpoint its own tooling reads, reusing any reading another tool on the
   machine already fetched, and a 429 puts the fetcher to sleep rather than into a
   retry loop. Codex's windows come from its rollout files.
+- **Codex sessions without setup.** Local rollout events populate the panel,
+  taskbar task line and tray count, including when Atoll starts mid-turn. A
+  background scan follows new events every two seconds, checks resumed logs in
+  older directories, and ages sessions by event time rather than scan time.
 - **Settings, a right-click menu, and machines that run one agent.** Right-click
   the readout for Settings and Quit. The settings window turns run-at-login on
   and off, shows or hides each agent's block in the readout, and moves the two
@@ -60,10 +64,9 @@ to land.
 - **Codex hook installation.** `atoll setup install codex` currently fails with
   "not implemented yet". What it needs is `~/.codex/config.toml` and its hooks
   file, wired with the same add-only, take-back-exactly-what-was-added
-  discipline the Claude Code side already has. Until then Codex shows up only
-  through the rollout files Atoll reads anyway, which is enough for rate limits
-  and nothing else, and the settings page says "coming soon" beside a Codex it
-  can already see on the machine.
+  discipline the Claude Code side already has. Rollout files already provide
+  Codex's rate limits and running/completed session state. Approval replies and
+  jumping back to the session's terminal still need live integration.
 - **Toast notifications.** A card appears when a session wants an answer.
   Nothing appears when a long run finishes with nothing to ask, which is the
   other moment worth interrupting somebody for. This wants a toast, and a switch
