@@ -11,6 +11,7 @@
 
 use atoll_core::protocol::HookSource;
 use atoll_core::usage::{self, ClaudeLimits, CodexUsage, WindowUsage};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::util::home_dir;
@@ -55,7 +56,8 @@ pub struct RateWindow {
 }
 
 /// The last usage reading, reused for [`REFRESH_SECS`].
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct UsageSnapshot {
     /// Claude's windows, from the OAuth usage endpoint.
     pub claude: ClaudeLimits,
@@ -172,13 +174,12 @@ impl UsageSnapshot {
 
     /// The one-line form the tray tooltip shows, leading with Claude and falling
     /// back to Codex.
-    pub fn compact(&self) -> String {
-        let claude = self.usage_summary(HookSource::Claude);
-        if claude.is_empty() {
-            self.usage_summary(HookSource::Codex)
-        } else {
-            claude
-        }
+    pub fn compact(&self, visible: &[HookSource]) -> String {
+        visible
+            .iter()
+            .map(|agent| self.usage_summary(*agent))
+            .find(|summary| !summary.is_empty())
+            .unwrap_or_default()
     }
 
     /// One line per agent for the headless log. Agents with no reading are left
@@ -275,19 +276,13 @@ const RATE_LIMIT_RETRY_SECS: u64 = 120;
 /// No token almost always means no Claude Code on this machine at all — a
 /// Codex-only setup is a perfectly normal one — and a laptop should not spend
 /// a worker thread every few seconds rediscovering that. Long, but not
-/// forever: somebody who installs Claude Code mid-afternoon still gets their
-/// numbers within ten minutes, or immediately by clicking the readout.
+/// forever: later Claude activity can retry after the cooldown.
 const NO_TOKEN_RETRY_SECS: u64 = 600;
-
-/// How fresh the reading has to be before fetching again on the user's click
-/// is pointless rather than polite.
-pub const CLICK_FRESH_SECS: u64 = 15;
 
 /// Claude's rate-limit windows: the freshest reading anyone on this machine
 /// already holds, else from the endpoint. The endpoint is asked only when the
-/// best reading on disk is at least `min_age_secs` old — the TTL for the
-/// routine cadence, something smaller for the moments somebody is actually
-/// looking.
+/// best reading on disk is at least `min_age_secs` old. Activity-triggered UI
+/// fetches and the headless monitor share this cache and its retry cooldowns.
 ///
 /// **Blocking, and not for the UI thread.** The caller runs this on a worker and
 /// takes the result through a channel.
@@ -686,7 +681,10 @@ mod tests {
         assert!(nothing.windows(HookSource::Claude).is_empty());
         assert!(nothing.windows(HookSource::Codex).is_empty());
         assert_eq!(nothing.usage_summary(HookSource::Claude), "");
-        assert_eq!(nothing.compact(), "");
+        assert_eq!(
+            nothing.compact(&[HookSource::Claude, HookSource::Codex]),
+            ""
+        );
         assert!(nothing.detail_lines().is_empty());
     }
 
@@ -697,13 +695,21 @@ mod tests {
             codex: Some(codex()),
             ..UsageSnapshot::default()
         };
-        assert_eq!(both.compact(), "Session 92% · Week 69% · Fable 73%");
+        assert_eq!(
+            both.compact(&[HookSource::Claude, HookSource::Codex]),
+            "Session 92% · Week 69% · Fable 73%"
+        );
+        assert_eq!(both.compact(&[HookSource::Codex]), "5h 93% · Week 42%");
+        assert_eq!(both.compact(&[]), "");
 
         let codex_only = UsageSnapshot {
             codex: Some(codex()),
             ..UsageSnapshot::default()
         };
-        assert_eq!(codex_only.compact(), "5h 93% · Week 42%");
+        assert_eq!(
+            codex_only.compact(&[HookSource::Claude, HookSource::Codex]),
+            "5h 93% · Week 42%"
+        );
         assert_eq!(codex_only.detail_lines(), vec!["codex 5h 93% Week 42%"]);
     }
 

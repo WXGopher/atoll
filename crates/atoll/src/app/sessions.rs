@@ -13,6 +13,13 @@ use atoll_core::state::{AgentTasks, SessionState, SessionTable};
 
 const POLL: Duration = Duration::from_secs(2);
 
+#[derive(Default)]
+pub struct Update {
+    pub changed: bool,
+    pub last_seen: Option<u64>,
+    pub new_activity: bool,
+}
+
 pub struct CodexWatcher {
     home: Option<PathBuf>,
     cache: Arc<Mutex<SessionCache>>,
@@ -21,6 +28,9 @@ pub struct CodexWatcher {
     scanning: Cell<bool>,
     last_scan: Cell<Option<Instant>>,
     counts: Cell<Option<AgentTasks>>,
+    /// Reading pre-existing logs establishes a baseline; only later events
+    /// release the display restored at startup.
+    latest_event: Cell<u64>,
 }
 
 impl CodexWatcher {
@@ -37,16 +47,24 @@ impl CodexWatcher {
             scanning: Cell::new(false),
             last_scan: Cell::new(None),
             counts: Cell::new(None),
+            latest_event: Cell::new(atoll_core::now_unix_secs()),
         }
     }
 
-    pub fn poll(&self, table: &mut SessionTable) -> bool {
+    pub fn poll(&self, table: &mut SessionTable) -> Update {
         let now = atoll_core::now_unix_secs();
-        let mut changed = false;
+        let mut update = Update::default();
         while let Ok(result) = self.rx.try_recv() {
             self.scanning.set(false);
             if let Ok(sessions) = result {
-                changed |= table.sync_observed(HookSource::Codex, sessions, now);
+                if let Some(at) = sessions.iter().map(|session| session.last_seen).max() {
+                    update.last_seen = Some(update.last_seen.unwrap_or(0).max(at));
+                    if at > self.latest_event.get() && at <= now {
+                        self.latest_event.set(at);
+                        update.new_activity = true;
+                    }
+                }
+                update.changed |= table.sync_observed(HookSource::Codex, sessions, now);
                 let counts = table.tasks(HookSource::Codex, now);
                 if self.counts.replace(Some(counts)) != Some(counts) {
                     crate::util::debug_log(&format!(
@@ -57,10 +75,10 @@ impl CodexWatcher {
             }
         }
         if self.scanning.get() || self.last_scan.get().is_some_and(|at| at.elapsed() < POLL) {
-            return changed;
+            return update;
         }
         let Some(home) = self.home.clone() else {
-            return changed;
+            return update;
         };
         self.scanning.set(true);
         self.last_scan.set(Some(Instant::now()));
@@ -80,6 +98,43 @@ impl CodexWatcher {
         if spawned.is_err() {
             self.scanning.set(false);
         }
-        changed
+        update
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_new_events_release_the_saved_startup_display() {
+        let now = atoll_core::now_unix_secs();
+        let mut watcher = CodexWatcher::new();
+        watcher.home = None; // Feed snapshots directly, without reading user logs.
+        watcher.latest_event.set(now - 60);
+        let mut table = SessionTable::new();
+        let mut session = SessionState::new("existing", HookSource::Codex, now - 65);
+        watcher.tx.send(Ok(vec![session.clone()])).unwrap();
+        let baseline = watcher.poll(&mut table);
+        assert!(baseline.changed);
+        assert!(!baseline.new_activity);
+        assert_eq!(baseline.last_seen, Some(now - 65));
+
+        watcher.tx.send(Ok(vec![session.clone()])).unwrap();
+        let repeated = watcher.poll(&mut table);
+        assert!(!repeated.changed && !repeated.new_activity);
+
+        session.last_seen = now - 1;
+        watcher.tx.send(Ok(vec![session.clone()])).unwrap();
+        let fresh = watcher.poll(&mut table);
+        assert!(fresh.changed && fresh.new_activity);
+        assert_eq!(fresh.last_seen, Some(now - 1));
+
+        watcher.tx.send(Ok(vec![session])).unwrap();
+        assert!(!watcher.poll(&mut table).new_activity);
+        // Expiry/removal is not new activity either.
+        watcher.tx.send(Ok(vec![])).unwrap();
+        let removed = watcher.poll(&mut table);
+        assert!(removed.changed && !removed.new_activity);
     }
 }

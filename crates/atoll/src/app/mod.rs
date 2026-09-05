@@ -29,6 +29,7 @@ mod bridge;
 mod card;
 mod cardview;
 pub(crate) mod config;
+mod display;
 mod flyout;
 mod icon;
 pub mod net;
@@ -54,7 +55,7 @@ use std::time::{Duration, Instant};
 use atoll_core::now_unix_secs;
 use atoll_core::protocol::{Envelope, HookSource, Response, events};
 use atoll_core::server::ConnectionHandle;
-use atoll_core::state::{Phase, SessionTable};
+use atoll_core::state::{AgentTasks, Phase, SessionTable};
 use atoll_core::transcript;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
@@ -126,6 +127,8 @@ pub fn run() -> io::Result<()> {
     // tray-only Atoll has no windows open at all.
     let result = slint::run_event_loop_until_quit().map_err(io::Error::other);
 
+    app.remember_display();
+    app.display.borrow_mut().save(true);
     APP.with(|slot| slot.borrow_mut().take());
     result
 }
@@ -140,6 +143,7 @@ struct App {
     host: Cell<Option<win::Taskbar>>,
     flyout: ui::FlyoutWindow,
     flyout_open: Cell<bool>,
+    flyout_anchor: Cell<Option<(Rect, Anchor)>>,
     flyout_dismissal: RefCell<Option<flyout::Dismissal>>,
     /// The panel's OS window, once it has been taken out of the taskbar. Kept
     /// so that is done once and not once per opening: the tweak is a hide-and-
@@ -173,6 +177,7 @@ struct App {
     scanning: Cell<bool>,
 
     usage: RefCell<UsageSnapshot>,
+    display: RefCell<display::DisplayState>,
     /// Claude's usage arrives over the network, so it comes back on a channel
     /// rather than being read inline: an eight-second timeout on the UI thread
     /// would be eight seconds of frozen interface.
@@ -196,6 +201,7 @@ impl App {
         let bar = ui::TaskbarBar::new().map_err(io::Error::other)?;
         let flyout = ui::FlyoutWindow::new().map_err(io::Error::other)?;
         let config = Config::load();
+        let display = display::DisplayState::load();
         let (limits_tx, limits_rx) = std::sync::mpsc::channel();
         let (titles_tx, titles_rx) = std::sync::mpsc::channel();
 
@@ -205,6 +211,7 @@ impl App {
             host: Cell::new(None),
             flyout,
             flyout_open: Cell::new(false),
+            flyout_anchor: Cell::new(None),
             flyout_dismissal: RefCell::new(None),
             flyout_handle: Cell::new(None),
             settings_window: RefCell::new(None),
@@ -220,7 +227,8 @@ impl App {
             titles_rx,
             transcripts: Arc::new(Mutex::new(transcript::TranscriptCache::new())),
             scanning: Cell::new(false),
-            usage: RefCell::new(UsageSnapshot::default()),
+            usage: RefCell::new(display.usage()),
+            display: RefCell::new(display),
             limits_tx,
             limits_rx,
             fetching: Cell::new(false),
@@ -469,7 +477,7 @@ impl App {
         // The title worker posts to the event loop the same way the pipe thread
         // does, so this is where its answers land too.
         let titles_arrived = self.collect_titles();
-        let sessions_arrived = self.codex_sessions.poll(&mut self.table.borrow_mut());
+        let sessions_arrived = self.poll_codex_sessions();
 
         let mut received = 0usize;
         while let Ok(event) = self.events.try_recv() {
@@ -525,6 +533,13 @@ impl App {
         }
 
         self.table.borrow_mut().apply(&payload, source, now);
+        self.display.borrow_mut().activate(source, now, now);
+        if payload.event_name() == events::SESSION_END
+            && self.table.borrow().tasks(source, now).total() == 0
+        {
+            self.display.borrow_mut().end_agent(source);
+        }
+        self.refresh_usage_after_activity(source, now);
 
         // A `PostToolUse`, a `Stop`, or a new turn can settle the very approval
         // the open card is asking about — the user answered in the terminal, or
@@ -792,6 +807,7 @@ impl App {
     // ------------------------------------------------------------- painting
 
     fn refresh(self: &Rc<Self>) {
+        self.remember_display();
         self.refresh_card();
         self.refresh_bar();
         if self.flyout_open.get() {
@@ -861,18 +877,17 @@ impl App {
             .unwrap_or(taskbar::Along::Vertical);
         let (lines, good_at, warn_at) = {
             let config = self.config.borrow();
-            let table = self.table.borrow();
-            let now = now_unix_secs();
             let lines = [
                 taskbar::AgentLine {
                     agent: HookSource::Claude,
-                    show: config.taskbar.claude,
-                    tasks: table.tasks(HookSource::Claude, now),
+                    show: config.taskbar.claude
+                        && self.display.borrow().visible(HookSource::Claude),
+                    tasks: self.agent_tasks(HookSource::Claude),
                 },
                 taskbar::AgentLine {
                     agent: HookSource::Codex,
-                    show: config.taskbar.codex,
-                    tasks: table.tasks(HookSource::Codex, now),
+                    show: config.taskbar.codex && self.display.borrow().visible(HookSource::Codex),
+                    tasks: self.agent_tasks(HookSource::Codex),
                 },
             ];
             let (good_at, warn_at) = config.taskbar.thresholds();
@@ -882,26 +897,39 @@ impl App {
         self.bar.set_chips(&chips, along);
     }
 
-    /// Which agents have a live session, in first-seen order.
-    ///
-    /// The detail panel gives an agent a section for having a session even when
-    /// it has reported no usage at all, because "this is running and I cannot
-    /// see its quota" is worth saying.
-    fn live_agents(&self) -> Vec<HookSource> {
-        self.table
-            .borrow()
-            .sessions()
-            .map(|state| state.source)
-            .collect()
+    fn agent_tasks(&self, source: HookSource) -> AgentTasks {
+        let display = self.display.borrow();
+        if !display.visible(source) {
+            AgentTasks::default()
+        } else if display.is_live() {
+            self.table.borrow().tasks(source, now_unix_secs())
+        } else {
+            display.saved_tasks(source)
+        }
+    }
+
+    fn remember_display(&self) {
+        if !self.display.borrow().is_live() {
+            return;
+        }
+        let sessions = self.session_rows(usize::MAX, true);
+        self.display
+            .borrow_mut()
+            .remember(self.usage.borrow().clone(), sessions, now_unix_secs());
     }
 
     /// The session rows, oldest session first so the blocks do not shuffle every
     /// time a phase changes.
     fn session_rows(&self, limit: usize, rich: bool) -> Vec<ui::SessionRow> {
+        let display = self.display.borrow();
+        if !display.is_live() {
+            return display.saved_sessions(limit);
+        }
         let table = self.table.borrow();
         let titles = self.titles.borrow();
         table
             .sessions()
+            .filter(|state| display.visible(state.source))
             .take(limit)
             .map(|state| {
                 let project = state
@@ -934,14 +962,8 @@ impl App {
         let now = now_unix_secs();
         // Cheap, and the only thing that notices explorer coming back.
         self.watch_the_taskbar();
-        let refreshed = {
-            let mut usage = self.usage.borrow_mut();
-            let before = usage.refreshed_at;
-            usage.refreshed(now);
-            usage.refreshed_at != before
-        };
-        let limits_arrived = self.collect_claude_limits(now);
-        let sessions_arrived = self.codex_sessions.poll(&mut self.table.borrow_mut());
+        let limits_arrived = self.collect_claude_limits();
+        let sessions_arrived = self.poll_codex_sessions();
 
         let before = self.table.borrow().counts(now);
         self.table.borrow_mut().sweep(now);
@@ -949,7 +971,7 @@ impl App {
 
         if self.current_is_stale() {
             self.dismiss();
-        } else if refreshed || limits_arrived || sessions_arrived || before != after {
+        } else if limits_arrived || sessions_arrived || before != after {
             self.refresh();
         }
 
@@ -959,25 +981,54 @@ impl App {
             self.promote();
             self.refresh();
         }
+        self.display.borrow_mut().save(false);
     }
 
-    /// Take whatever the usage worker has finished, and start another if the
-    /// reading has gone stale.
-    fn collect_claude_limits(&self, now: u64) -> bool {
+    fn poll_codex_sessions(&self) -> bool {
+        let update = self.codex_sessions.poll(&mut self.table.borrow_mut());
+        if let Some(at) = update.last_seen {
+            self.display.borrow_mut().observe(HookSource::Codex, at);
+            if update.new_activity {
+                let now = now_unix_secs();
+                self.display
+                    .borrow_mut()
+                    .activate(HookSource::Codex, at, now);
+                self.refresh_usage_after_activity(HookSource::Codex, now);
+            }
+        }
+        self.display.borrow().is_live() && (update.changed || update.new_activity)
+    }
+
+    /// Refresh only the agent that produced activity. A cached Claude quota
+    /// must not cause requests while only Codex is being used.
+    fn refresh_usage_after_activity(&self, source: HookSource, now: u64) {
+        if !self.display.borrow().visible(source) {
+            return;
+        }
+        match source {
+            HookSource::Codex => {
+                self.usage.borrow_mut().refreshed(now);
+            }
+            HookSource::Claude => {
+                if self
+                    .usage
+                    .borrow()
+                    .claude
+                    .is_stale(now, atoll_core::usage::CLAUDE_USAGE_TTL_SECS)
+                {
+                    self.spawn_claude_fetch(atoll_core::usage::CLAUDE_USAGE_TTL_SECS);
+                }
+            }
+        }
+    }
+
+    /// Finish a fetch already requested by a hook; timers never start one.
+    fn collect_claude_limits(&self) -> bool {
         let mut arrived = false;
         while let Ok(limits) = self.limits_rx.try_recv() {
             self.usage.borrow_mut().claude = limits;
             self.fetching.set(false);
             arrived = true;
-        }
-
-        let stale = self
-            .usage
-            .borrow()
-            .claude
-            .is_stale(now, atoll_core::usage::CLAUDE_USAGE_TTL_SECS);
-        if stale {
-            self.spawn_claude_fetch(atoll_core::usage::CLAUDE_USAGE_TTL_SECS);
         }
         arrived
     }
@@ -1009,11 +1060,12 @@ impl App {
         let tray = self.tray.borrow();
         let Some(tray) = tray.as_ref() else { return };
 
-        let now = now_unix_secs();
-        let (sessions, waiting) = {
-            let table = self.table.borrow();
-            (table.len(), table.counts(now).waiting)
-        };
+        let tasks: Vec<_> = AGENTS
+            .into_iter()
+            .map(|source| self.agent_tasks(source))
+            .collect();
+        let sessions = tasks.iter().map(|tasks| tasks.total()).sum();
+        let waiting = tasks.iter().map(|tasks| tasks.pending).sum();
         tray.refresh(IconState {
             sessions,
             waiting,
@@ -1030,7 +1082,10 @@ impl App {
         tray.set_tooltip(&tray_tooltip(
             sessions,
             waiting,
-            &self.usage.borrow().compact(),
+            &self
+                .usage
+                .borrow()
+                .compact(&self.display.borrow().visible_agents()),
         ));
     }
 
@@ -1130,17 +1185,16 @@ impl App {
             Ok(()) => {
                 self.flyout.window().request_redraw();
                 self.flyout_open.set(true);
+                self.flyout_anchor.set(Some((anchor, from)));
                 self.adopt_flyout();
                 *self.flyout_dismissal.borrow_mut() = Some(flyout::Dismissal::new(
                     win::foreground_window(),
                     win::mouse_buttons_down(),
                 ));
                 self.log_jumpability();
-                self.start_title_scan();
-                // Somebody is about to read the numbers: get fresher ones than
-                // the routine cadence keeps, and the open panel repaints when
-                // they arrive.
-                self.spawn_claude_fetch(crate::usage_cache::CLICK_FRESH_SECS);
+                if self.display.borrow().is_live() {
+                    self.start_title_scan();
+                }
             }
             Err(error) => {
                 crate::util::debug_log(&format!("flyout show failed: {error}"));
@@ -1153,6 +1207,7 @@ impl App {
     }
 
     fn close_flyout(&self) {
+        self.flyout_anchor.set(None);
         self.flyout_dismissal.borrow_mut().take();
         if self.flyout_open.get() {
             let _ = self.flyout.hide();
@@ -1218,20 +1273,33 @@ impl App {
     }
 
     fn refresh_flyout(&self) {
+        let previous_usage: Vec<ui::UsageRow> = self.flyout.get_usage_rows().iter().collect();
+        let previous_height = flyout_height(
+            self.flyout.get_sessions().row_count(),
+            usage_block_height(&previous_usage),
+        );
         let rows = self.session_rows(usize::MAX, true);
-        let live = self.live_agents();
+        let visible = self.display.borrow().visible_agents();
         let (good_at, warn_at) = self.config.borrow().taskbar.thresholds();
         let usage = usage_sections(
             &self.usage.borrow(),
-            &live,
-            now_unix_secs(),
+            &visible,
+            self.display.borrow().reading_time(now_unix_secs()),
             win::local_offset_secs(),
             good_at,
             warn_at,
         );
+        let height = flyout_height(rows.len(), usage_block_height(&usage));
         self.flyout.set_sessions(ModelRc::new(VecModel::from(rows)));
         self.flyout
             .set_usage_rows(ModelRc::new(VecModel::from(usage)));
+        // A fetch can add reset times after opening. Resize and keep the panel
+        // inside the work area when those extra lines appear or disappear.
+        if height != previous_height
+            && let Some((anchor, from)) = self.flyout_anchor.get()
+        {
+            self.place_flyout(anchor, from);
+        }
     }
 
     fn place_flyout(&self, anchor: Rect, from: Anchor) {
@@ -1525,6 +1593,7 @@ enum Anchor {
 /// How tall one detail-panel row is, mirrored in `ui/flyout.slint`.
 const HEADING_ROW: f32 = 26.0;
 const WINDOW_ROW: f32 = 17.0;
+const RESET_ROW: f32 = 18.0;
 
 /// The detail panel's usage block: an agent per section, its tightest number
 /// large in the heading, and one bar per window under it.
@@ -1534,7 +1603,7 @@ const WINDOW_ROW: f32 = 17.0;
 /// reading every line; a short bar is short from across the room.
 fn usage_sections(
     usage: &UsageSnapshot,
-    live: &[HookSource],
+    visible: &[HookSource],
     now: u64,
     offset_secs: i64,
     good_at: i64,
@@ -1542,10 +1611,10 @@ fn usage_sections(
 ) -> Vec<ui::UsageRow> {
     let mut rows = Vec::new();
     for agent in AGENTS {
-        let windows = usage.windows(agent);
-        if windows.is_empty() && !live.contains(&agent) {
+        if !visible.contains(&agent) {
             continue;
         }
+        let windows = usage.windows(agent);
 
         // The heading carries the number the panel was opened for: the window
         // that will stop this agent first.
@@ -1590,7 +1659,7 @@ fn usage_sections(
                 tier: crate::usage_cache::left_tier(window.left, good_at, warn_at).into(),
                 fill: window.left as f32 / 100.0,
                 resets: crate::usage_cache::reset_label(window.resets_at, now, offset_secs)
-                    .map(|when| format!("resets {when}"))
+                    .map(|when| format!("Resets {when}"))
                     .unwrap_or_default()
                     .into(),
             });
@@ -1605,7 +1674,15 @@ fn usage_block_height(rows: &[ui::UsageRow]) -> f32 {
         return 15.0;
     }
     rows.iter()
-        .map(|row| if row.heading { HEADING_ROW } else { WINDOW_ROW })
+        .map(|row| {
+            if row.heading {
+                HEADING_ROW
+            } else if row.resets.is_empty() {
+                WINDOW_ROW
+            } else {
+                WINDOW_ROW + RESET_ROW
+            }
+        })
         .sum()
 }
 
@@ -1818,12 +1895,18 @@ mod tests {
     /// taller than the window rows under them, so a count is not enough.
     #[test]
     fn the_usage_block_is_measured_row_by_row() {
-        let rows = usage_sections(&both_agents(), &[], NOW, 0, 50, 20);
+        let rows = usage_sections(&both_agents(), &AGENTS, NOW, 0, 50, 20);
         // claude + 3 windows, codex + 2 windows.
         assert_eq!(rows.len(), 7);
         assert_eq!(rows.iter().filter(|row| row.heading).count(), 2);
         assert_eq!(
             usage_block_height(&rows),
+            2.0 * HEADING_ROW + 5.0 * WINDOW_ROW + 3.0 * RESET_ROW
+        );
+        // Expired reset times disappear without leaving blank lines behind.
+        let expired = usage_sections(&both_agents(), &AGENTS, NOW + 6 * 86_400, 0, 50, 20);
+        assert_eq!(
+            usage_block_height(&expired),
             2.0 * HEADING_ROW + 5.0 * WINDOW_ROW
         );
         // An empty block still leaves room for the line that says so.
@@ -1834,7 +1917,7 @@ mod tests {
     /// carries a bar whose length is the number.
     #[test]
     fn every_section_leads_with_its_tightest_window() {
-        let rows = usage_sections(&both_agents(), &[], NOW, 0, 50, 20);
+        let rows = usage_sections(&both_agents(), &AGENTS, NOW, 0, 50, 20);
 
         assert_eq!(rows[0].label, "claude");
         assert_eq!(rows[0].value, "69%", "the week, not the session");
@@ -1843,7 +1926,7 @@ mod tests {
         assert_eq!(rows[1].label, "Session");
         assert_eq!(rows[1].value, "92%");
         assert!((rows[1].fill - 0.92).abs() < 0.001);
-        assert!(rows[1].resets.starts_with("resets "));
+        assert!(rows[1].resets.starts_with("Resets "));
 
         assert_eq!(rows[4].label, "codex");
         assert_eq!(
@@ -1871,6 +1954,15 @@ mod tests {
         // And an idle machine with no readings gets no sections at all; the
         // panel says "No usage data yet" itself.
         assert!(usage_sections(&UsageSnapshot::default(), &[], NOW, 0, 50, 20).is_empty());
+    }
+
+    #[test]
+    fn cached_limits_cannot_restore_a_hidden_agent_in_the_details() {
+        let rows = usage_sections(&both_agents(), &[CODEX], NOW, 0, 50, 20);
+        assert_eq!(rows.len(), 3);
+        assert!(rows[0].heading && rows[0].label == "codex");
+        assert!(!rows.iter().any(|row| row.agent == "claude"));
+        assert!(usage_sections(&both_agents(), &[], NOW, 0, 50, 20).is_empty());
     }
 
     /// The label the panel shows for a session: the project it is in, then what

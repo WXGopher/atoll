@@ -30,7 +30,7 @@ export struct SessionRow {
 // somebody opened the panel to see. A window row is that agent's individual
 // limits: a name, a bar, a percentage, and when it rolls over.
 //
-// Rust builds these; see `app::detail_rows`.
+// Rust builds these; see `app::usage_sections`.
 export struct UsageRow {
     heading: bool,
     // "claude" | "codex" on a heading; "" on a window row.
@@ -43,7 +43,7 @@ export struct UsageRow {
     tier: string,
     // How much of the window is left, 0.0–1.0. The bar's fill.
     fill: float,
-    // "resets 00:40", or "" for a window that did not say.
+    // "Resets Mon 00:40", or "" for a window that did not say.
     resets: string,
 }
 

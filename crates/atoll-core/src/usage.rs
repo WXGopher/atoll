@@ -38,6 +38,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// A byte-order mark, which `serde_json` will not parse past.
@@ -77,7 +78,7 @@ const CACHE_CONTEXT_KEY: &str = "contextPercent";
 const CACHE_SESSION_KEY: &str = "sessionId";
 
 /// One rate-limit window, in whichever agent's spelling it arrived.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct WindowUsage {
     /// How much of the window is consumed, 0–100.
     pub used_percent: f64,
@@ -184,7 +185,7 @@ const CACHE_LIMITS_KEY: &str = "limits";
 const CACHE_FETCHED_AT_KEY: &str = "fetchedAt";
 
 /// One rate-limit window, as `/api/oauth/usage` reports it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UsageLimit {
     /// `session`, `weekly_all`, or `weekly_scoped`.
     pub kind: String,
@@ -197,7 +198,7 @@ pub struct UsageLimit {
 }
 
 /// Every window the endpoint reported, in the order it reported them.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ClaudeLimits {
     pub limits: Vec<UsageLimit>,
     /// When this reading was taken, in Unix seconds.
@@ -429,7 +430,7 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
 }
 
 /// Codex's two windows, plus the plan they belong to.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CodexUsage {
     /// The short window — five hours on current plans.
     pub primary: Option<WindowUsage>,

@@ -201,17 +201,30 @@ fn native_slint_readout_stays_frameless_through_layout_and_visibility_changes() 
                     })
                     .unwrap();
                 assert_readout(hwnd(bar.window_handle().unwrap()), true);
-                bar.set_chips(
-                    &[Chip {
-                        agent: Some(HookSource::Codex),
-                        value: "28%".into(),
-                        tier: "warn",
-                        tasks: AgentTasks {
-                            running: n % 3,
-                            done: n % 2,
-                            pending: 0,
+                let mut chips = vec![Chip {
+                    agent: Some(HookSource::Codex),
+                    value: "28%".into(),
+                    tier: "warn",
+                    tasks: AgentTasks {
+                        running: n % 3,
+                        done: n % 2,
+                        pending: 0,
+                    },
+                }];
+                // Activity can hide an agent and a later hook brings it back.
+                if !n.is_multiple_of(3) {
+                    chips.insert(
+                        0,
+                        Chip {
+                            agent: Some(HookSource::Claude),
+                            value: "23%".into(),
+                            tier: "warn",
+                            tasks: AgentTasks::default(),
                         },
-                    }],
+                    );
+                }
+                bar.set_chips(
+                    &chips,
                     if n.is_multiple_of(2) {
                         Along::Vertical
                     } else {

@@ -22,8 +22,9 @@ Atoll 通过 Claude Code hooks 和 Codex 本地会话日志跟踪活动。平时
 ### 功能
 
 - **任务栏额度与状态**：显示每个代理最紧张的额度窗口，以及等待处理、运行中、已完成的会话数量。颜色阈值可在设置中调整；仅等待或运行状态需要动画。
+- **按活动显示代理**：启动时恢复上次保存的代理显隐、额度和会话文本，不主动刷新额度。收到 Claude hook 或新的 Codex 日志事件后更新，并隐藏连续十五分钟没有活动的代理；再次活动时自动显示。点击详情不会触发额度请求。
 - **详情面板自动收起**：点击任务栏控件或托盘图标展开；点击桌面、其他窗口，或切换到其他窗口后自动收起。再次点击 Atoll 图标也能关闭。
-- **Codex 会话自动识别**：每两秒读取本地日志中的开始、完成和中断事件，支持启动 Atoll 前已开始的会话，以及从旧日志目录恢复的会话。连续十五分钟没有活动的会话会从列表移除。
+- **Codex 会话自动识别**：每两秒读取本地日志中的开始、完成和中断事件，支持从旧日志目录恢复的会话。启动时先建立日志基线，新的事件到来后更新显示；进入实时状态后，连续十五分钟没有活动的会话会从列表移除。
 - **Claude Code 审批卡片**：允许或拒绝工具调用，回答 `AskUserQuestion`。已被你的权限设置允许的工具调用不会弹出审批卡片。
 - **返回会话终端**：对有终端信息的会话，点击详情行可定位 Windows Terminal 或 VS Code 中对应的终端。无法定位终端的会话行不会显示可点击提示。
 - **设置与托盘**：支持开机启动、按代理显示或隐藏任务栏内容、修改颜色阈值。右键任务栏控件或托盘图标进入设置或退出。
@@ -71,6 +72,7 @@ Atoll 在现有 hooks 旁添加自己的配置，卸载时只移除自己添加�
 | `~/.claude/projects/**/*.jsonl` | 只读，用于会话标题 |
 | `~/.codex/sessions/**/*.jsonl` | 只读，用于 Codex 会话状态与额度 |
 | `%LOCALAPPDATA%\Atoll\bin` | hooks 使用的稳定安装路径，避免后续编译覆盖正在使用的程序 |
+| `%APPDATA%\Atoll\display.json` | 上次显示的代理、额度和会话文本；不保存审批连接或终端跳转目标 |
 
 环境变量：
 
@@ -94,16 +96,17 @@ cargo test --workspace
 cargo build --workspace --release
 ```
 
-需要真实 Windows 桌面的原生窗口回归测试可单独运行：
+需要真实 Windows 桌面的窗口及显示恢复回归测试可单独运行：
 
 ```powershell
 cargo test -p atoll native_slint_readout_stays_frameless -- --ignored --nocapture
+cargo test -p atoll --test display_lifecycle -- --ignored --nocapture
 ```
 
 正式发布包由 [GitHub Actions](.github/workflows/release.yml) 构建，包含 `atoll.exe`、`atoll-hook.exe`、README 和许可证。每个压缩包均提供 `SHA256SUMS.txt` 和构建来源证明，可使用 GitHub CLI 验证：
 
 ```powershell
-gh attestation verify atoll-v0.1.3-windows-x86_64.zip --repo WXGopher/atoll
+gh attestation verify atoll-v0.1.4-windows-x86_64.zip --repo WXGopher/atoll
 ```
 
 后续计划包括悬停预览、Codex 审批集成及通知，见 [开发路线图](docs/ROADMAP.md)。
@@ -129,8 +132,9 @@ Atoll follows Claude Code hooks and Codex's local session logs. Quota and task c
 ### Features
 
 - **Taskbar quota and status**: see each agent's tightest quota window and counts of waiting, running and completed sessions. Colour thresholds are configurable; only waiting or running states animate.
+- **Activity-driven visibility**: startup restores the saved agent visibility, quota and session text without refreshing quota. A Claude hook or a new Codex log event updates the display and hides agents silent for fifteen minutes; activity brings them back. Opening details does not request quota.
 - **Details that dismiss automatically**: click the readout or tray icon to open the panel. Click the desktop, another window, or switch windows to dismiss it. Clicking the Atoll icon again also closes it.
-- **Automatic Codex session tracking**: local start, completion and interruption events are read every two seconds. Sessions already running when Atoll starts and conversations resumed from older directories are detected. Sessions leave the list after fifteen minutes without activity.
+- **Automatic Codex session tracking**: local start, completion and interruption events are read every two seconds, including conversations resumed from older directories. Startup establishes a log baseline; new events resume live display updates. Once live, sessions leave the list after fifteen minutes without activity.
 - **Claude Code approval cards**: allow or deny tools and answer `AskUserQuestion`. Tools already allowed by your own permissions do not raise a card.
 - **Return to the session's terminal**: rows with terminal metadata can locate the corresponding Windows Terminal or VS Code terminal. Rows whose terminal is unknown show no click affordance.
 - **Settings and tray**: configure launch at login, agent visibility and colour thresholds. Right-click the readout or tray icon for Settings and Quit.
@@ -178,6 +182,7 @@ Atoll adds its hooks alongside yours and removes only what it added. Claude Code
 | `~/.claude/projects/**/*.jsonl` | Read-only session titles |
 | `~/.codex/sessions/**/*.jsonl` | Read-only Codex session activity and quota |
 | `%LOCALAPPDATA%\Atoll\bin` | Stable hook binaries, kept separate from later builds |
+| `%APPDATA%\Atoll\display.json` | Saved agent visibility, quota and session text; excludes approval connections and terminal targets |
 
 Environment variables:
 
@@ -201,16 +206,17 @@ cargo test --workspace
 cargo build --workspace --release
 ```
 
-Run the native window regression separately on a Windows desktop:
+Run the native window and display restoration regressions separately on a Windows desktop:
 
 ```powershell
 cargo test -p atoll native_slint_readout_stays_frameless -- --ignored --nocapture
+cargo test -p atoll --test display_lifecycle -- --ignored --nocapture
 ```
 
 Release archives are built by [GitHub Actions](.github/workflows/release.yml) and contain `atoll.exe`, `atoll-hook.exe`, the README and license. Each archive has a `SHA256SUMS.txt` checksum alongside it and a build provenance attestation. Verify the attestation with the GitHub CLI:
 
 ```powershell
-gh attestation verify atoll-v0.1.3-windows-x86_64.zip --repo WXGopher/atoll
+gh attestation verify atoll-v0.1.4-windows-x86_64.zip --repo WXGopher/atoll
 ```
 
 Hover previews, Codex approval integration and notifications are planned; see the [roadmap](docs/ROADMAP.md).

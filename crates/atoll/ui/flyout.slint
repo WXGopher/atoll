@@ -21,12 +21,13 @@ export component FlyoutWindow inherits Window {
     // A click on a jumpable session row, carrying the session's id.
     callback jump(string);
     // A heading row per agent, then one row per rate-limit window. Built by
-    // Rust; see `app::detail_rows`.
+    // Rust; see `app::usage_sections`.
     in property <[UsageRow]> usage-rows;
 
-    // Mirrors `app::HEADING_ROW` and `app::WINDOW_ROW`.
+    // Mirrors the row heights in `app::usage_block_height`.
     property <length> heading-h: 26px;
     property <length> window-h: 17px;
+    property <length> reset-h: 18px;
 
     property <bool> pulse: false;
 
@@ -158,7 +159,8 @@ export component FlyoutWindow inherits Window {
                 // it are that agent's individual windows, each with the bar
                 // that makes "nearly gone" visible without reading.
                 for row in root.usage-rows: Rectangle {
-                    height: row.heading ? root.heading-h : root.window-h;
+                    height: row.heading ? root.heading-h
+                        : root.window-h + (row.resets == "" ? 0px : root.reset-h);
 
                     if row.heading: HorizontalLayout {
                         width: 100%;
@@ -201,8 +203,9 @@ export component FlyoutWindow inherits Window {
                     }
 
                     if !row.heading: HorizontalLayout {
+                        y: 0px;
                         width: 100%;
-                        height: 100%;
+                        height: root.window-h;
                         spacing: 8px;
                         padding-left: 20px;
 
@@ -235,14 +238,38 @@ export component FlyoutWindow inherits Window {
                             horizontal-alignment: right;
                             vertical-alignment: center;
                         }
+                    }
+
+                    // Reset times get their own line, aligned with the bar.
+                    // They never compete with the percentage for space, and
+                    // windows without a reset keep their compact single row.
+                    if !row.heading && row.resets != "": HorizontalLayout {
+                        x: 80px;
+                        y: root.window-h + 1px;
+                        width: parent.width - self.x;
+                        height: 14px;
+                        spacing: 5px;
+
+                        Rectangle {
+                            width: 10px;
+                            horizontal-stretch: 0;
+                            Path {
+                                y: (parent.height - 10px) / 2;
+                                width: 10px;
+                                height: 10px;
+                                viewbox-width: 12;
+                                viewbox-height: 12;
+                                stroke: Theme.faint;
+                                stroke-width: 1px;
+                                commands: "M 6 1 A 5 5 0 1 1 6 11 A 5 5 0 1 1 6 1 M 6 3 V 6 L 8 7";
+                            }
+                        }
                         Text {
                             text: row.resets;
-                            color: Theme.faint;
+                            color: Theme.dim;
                             font-size: 10px;
-                            width: 74px;
-                            horizontal-stretch: 0;
+                            horizontal-stretch: 1;
                             vertical-alignment: center;
-                            overflow: elide;
                         }
                     }
                 }

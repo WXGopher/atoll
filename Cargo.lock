@@ -479,7 +479,7 @@ dependencies = [
 
 [[package]]
 name = "atoll"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "atoll-core",
  "clap",
@@ -495,7 +495,7 @@ dependencies = [
 
 [[package]]
 name = "atoll-core"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -505,7 +505,7 @@ dependencies = [
 
 [[package]]
 name = "atoll-hook"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "atoll-core",
  "serde_json",
