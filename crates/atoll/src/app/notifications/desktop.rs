@@ -2,7 +2,8 @@
 
 use std::collections::VecDeque;
 use std::path::Path;
-use std::sync::mpsc::{SyncSender, sync_channel};
+use std::sync::mpsc::{RecvTimeoutError, SyncSender, sync_channel};
+use std::time::{Duration, Instant};
 
 use windows::Data::Xml::Dom::XmlDocument;
 use windows::Foundation::TypedEventHandler;
@@ -25,6 +26,7 @@ use windows::core::{GUID, HSTRING, Interface, PCWSTR};
 use super::Completion;
 
 const APP_ID: &str = "Atoll.Desktop";
+const POPUP_DURATION: Duration = Duration::from_secs(3);
 const APP_ID_KEY: PROPERTYKEY = PROPERTYKEY {
     fmtid: GUID::from_u128(0x9f4c2855_9f79_4b39_a8d0_e1d42de1d5f3),
     pid: 5,
@@ -46,7 +48,22 @@ impl Notifier {
                 }
                 let mut ready = false;
                 let mut active = VecDeque::new();
-                for completion in rx {
+                let mut popups: VecDeque<(Instant, ToastNotification)> = VecDeque::new();
+                loop {
+                    // Expire before receiving more work so a busy stream cannot
+                    // keep an earlier popup on screen beyond its own deadline.
+                    hide_expired(&mut popups);
+                    let received = match popups.front() {
+                        Some((deadline, _)) => {
+                            rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                        }
+                        None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+                    };
+                    let completion = match received {
+                        Ok(completion) => completion,
+                        Err(RecvTimeoutError::Timeout) => continue,
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    };
                     let result = (|| {
                         if !ready {
                             let exe = atoll_core::install::stable_bin_dir()
@@ -59,6 +76,11 @@ impl Notifier {
                             ready = true;
                         }
                         let toast = show(&completion)?;
+                        // A newer completion replaces this session's old toast;
+                        // its old timer must not dismiss the replacement early.
+                        let tag = toast.Tag()?;
+                        popups.retain(|(_, earlier)| earlier.Tag().ok().as_ref() != Some(&tag));
+                        popups.push_back((Instant::now() + POPUP_DURATION, toast.clone()));
                         active.push_back(toast);
                         while active.len() > 16 {
                             active.pop_front();
@@ -68,6 +90,9 @@ impl Notifier {
                     if let Err(error) = result {
                         crate::util::debug_log(&format!("notification failed: {error}"));
                     }
+                }
+                for (_, toast) in popups {
+                    hide(&toast);
                 }
                 drop(active);
                 unsafe { RoUninitialize() };
@@ -82,6 +107,28 @@ impl Notifier {
         if let Err(error) = self.tx.try_send(completion) {
             crate::util::debug_log(&format!("notification not queued: {error}"));
         }
+    }
+}
+
+fn hide_expired(popups: &mut VecDeque<(Instant, ToastNotification)>) {
+    while popups
+        .front()
+        .is_some_and(|(deadline, _)| *deadline <= Instant::now())
+    {
+        if let Some((_, toast)) = popups.pop_front() {
+            hide(&toast);
+        }
+    }
+}
+
+fn hide(toast: &ToastNotification) {
+    // XML duration only offers "short" or "long"; explicitly withdraw the
+    // popup after three seconds without changing Windows' global preferences.
+    // https://learn.microsoft.com/uwp/api/windows.ui.notifications.toastnotifier.hide
+    let result = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(APP_ID))
+        .and_then(|notifier| notifier.Hide(toast));
+    if let Err(error) = result {
+        crate::util::debug_log(&format!("notification hide failed: {error}"));
     }
 }
 
@@ -215,6 +262,30 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
+        // Exercise the real Windows withdrawal path, including its dismissal
+        // callback, rather than assuming XML's "short" means three seconds.
+        let (dismissed_tx, dismissed_rx) = sync_channel(1);
+        toast
+            .Dismissed(&TypedEventHandler::new(
+                move |_,
+                      args: windows::core::Ref<
+                    windows::UI::Notifications::ToastDismissedEventArgs,
+                >| {
+                    if let Some(args) = args.as_ref() {
+                        let _ = dismissed_tx.try_send(args.Reason()?);
+                    }
+                    Ok(())
+                },
+            ))
+            .unwrap();
+        let mut popups = VecDeque::from([(Instant::now() + POPUP_DURATION, toast.clone())]);
+        assert!(matches!(
+            dismissed_rx.recv_timeout(POPUP_DURATION),
+            Err(RecvTimeoutError::Timeout)
+        ));
+        hide_expired(&mut popups);
+        assert!(popups.is_empty());
+        let dismissal = dismissed_rx.recv_timeout(Duration::from_secs(2));
         history
             .RemoveGroupedTagWithId(&tag, &group, &app_id)
             .unwrap();
@@ -223,6 +294,10 @@ mod tests {
         assert!(
             arrived,
             "Windows did not retain the completion notification"
+        );
+        assert_eq!(
+            dismissal.unwrap(),
+            windows::UI::Notifications::ToastDismissalReason::ApplicationHidden
         );
     }
 

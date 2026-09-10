@@ -28,7 +28,7 @@ Atoll 通过 Claude Code / Codex hooks 和 Codex 本地会话日志跟踪活动�
 - **Codex 会话自动识别**：每两秒读取本地日志中的开始、完成和中断事件，支持从旧日志目录恢复的会话。启动时先建立日志基线，新的事件到来后更新显示；进入实时状态后，连续十五分钟没有活动的会话会从列表移除。
 - **Claude Code 审批卡片**：允许或拒绝工具调用，回答 `AskUserQuestion`。已被你的权限设置允许的工具调用不会弹出审批卡片。
 - **Codex 审批与终端信息**：可选安装 Codex hooks，在真实 `PermissionRequest` 上允许或拒绝工具调用，并记录终端来源用于跳转。Codex 的结构化提问回复和桌面端精确会话跳转仍在计划中。
-- **后台完成通知**：观察到任务持续至少三十秒并完成后，发送静音 Windows 通知。不会补发历史完成、中断或短任务；正在查看详情或对应终端时也不提醒。设置中可关闭，Atoll 运行期间点击通知可返回会话或详情。
+- **后台完成通知**：观察到任务持续至少三十秒并完成后，发送静音 Windows 通知，弹出三秒后自动收起。不会补发历史完成、中断或短任务；正在查看详情或对应终端时也不提醒。设置中可关闭，Atoll 运行期间点击通知可返回会话或详情。
 - **返回会话终端**：对有终端信息的会话，点击详情行可定位 Windows Terminal 或 VS Code 中对应的终端。无法定位终端的会话行不会显示可点击提示。
 - **设置与托盘**：支持开机启动、按代理显示或隐藏任务栏内容、修改颜色阈值。右键任务栏控件或托盘图标进入设置或退出。
 - **任务栏集成**：跟随任务栏位置、自动隐藏和通知区域大小变化；嵌入失败时使用贴近任务栏的浮动显示。重复启动 Atoll 会替换旧实例。
@@ -154,7 +154,7 @@ Atoll follows Claude Code / Codex hooks and Codex's local session logs. Quota an
 - **Automatic Codex session tracking**: local start, completion and interruption events are read every two seconds, including conversations resumed from older directories. Startup establishes a log baseline; new events resume live display updates. Once live, sessions leave the list after fifteen minutes without activity.
 - **Claude Code approval cards**: allow or deny tools and answer `AskUserQuestion`. Tools already allowed by your own permissions do not raise a card.
 - **Codex approvals and terminal metadata**: optional hooks handle actual `PermissionRequest` events and record terminal ancestry for navigation. Structured question replies and exact Codex desktop conversation navigation remain planned.
-- **Background completion notifications**: silent Windows notifications follow tasks observed running for at least thirty seconds. Historical completions, interruptions, short tasks and sessions being watched in the panel or their terminal do not notify. Disable this in Settings; while Atoll is running, clicking a notification opens the session or details.
+- **Background completion notifications**: silent Windows notifications follow tasks observed running for at least thirty seconds, and their popups dismiss after three seconds. Historical completions, interruptions, short tasks and sessions being watched in the panel or their terminal do not notify. Disable this in Settings; while Atoll is running, clicking a notification opens the session or details.
 - **Return to the session's terminal**: rows with terminal metadata can locate the corresponding Windows Terminal or VS Code terminal. Rows whose terminal is unknown show no click affordance.
 - **Settings and tray**: configure launch at login, agent visibility and colour thresholds. Right-click the readout or tray icon for Settings and Quit.
 - **Taskbar integration**: follows the taskbar's position, auto-hide and notification-area size; falls back to a floating readout beside the taskbar if embedding fails. Starting another Atoll replaces the existing instance.
