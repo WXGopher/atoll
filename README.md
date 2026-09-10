@@ -38,7 +38,7 @@ Atoll 以 Codex 为支持和验证对象，通过 hooks、本地会话日志及�
 <img src="docs/readout.png" width="96" alt="垂直任务栏中的额度控件">
 <img src="docs/card.png" width="440" alt="Claude Code 工具审批卡片">
 
-项目仍在早期开发。上述功能描述对应当前源码，已发布的 v0.1.4 不包含新加入的悬停预览、Codex hooks 和完成通知；体验这些功能请从源码构建。部分截图来自较早版本，具体外观以当前程序为准。
+当前源码版本为 v0.1.5。项目仍在早期开发，部分截图来自较早版本，具体外观以当前程序为准。Codex CLI 提问接入与桌面分页历史读取为实验性功能，桌面原生问题仍在 Codex 中作答。
 
 ### 安装与使用
 
@@ -134,7 +134,7 @@ cargo test -p atoll --test display_lifecycle -- --ignored --nocapture
 正式发布包由 [GitHub Actions](.github/workflows/release.yml) 构建，包含 `atoll.exe`、`atoll-hook.exe`、README 和许可证。每个压缩包均提供 `SHA256SUMS.txt` 和构建来源证明，可使用 GitHub CLI 验证：
 
 ```powershell
-gh attestation verify atoll-v0.1.4-windows-x86_64.zip --repo WXGopher/atoll
+gh attestation verify atoll-v0.1.5-windows-x86_64.zip --repo WXGopher/atoll
 ```
 
 F01–F03 的交付范围与后续更新、远端会话候选项，见对照 open-vibe-island 整理的 [功能路线图](docs/ROADMAP.md)。更多代理、通知偏好和界面语言切换本轮不做。维护事项单列在 [已知问题](docs/KNOWN_ISSUES.md)。
@@ -176,7 +176,7 @@ Atoll focuses on Codex, using hooks, local session logs and an optional app-serv
 <img src="docs/readout.png" width="96" alt="Quota readout in a vertical taskbar">
 <img src="docs/card.png" width="440" alt="Claude Code tool approval card">
 
-These features describe the current source. The published v0.1.4 archive does not include the new hover preview, Codex hooks or completion notifications; build from source to use them. The project is in early development and some screenshots show earlier versions of the interface.
+The current source version is v0.1.5. The project is in early development and some screenshots show earlier versions. Codex CLI question integration and desktop paginated-history reads are experimental; desktop questions still require answering in Codex.
 
 ### Install and use
 
@@ -271,7 +271,7 @@ With Atoll installed and Windows notifications enabled, run `cargo test -p atoll
 Release archives are built by [GitHub Actions](.github/workflows/release.yml) and contain `atoll.exe`, `atoll-hook.exe`, the README and license. Each archive has a `SHA256SUMS.txt` checksum alongside it and a build provenance attestation. Verify the attestation with the GitHub CLI:
 
 ```powershell
-gh attestation verify atoll-v0.1.4-windows-x86_64.zip --repo WXGopher/atoll
+gh attestation verify atoll-v0.1.5-windows-x86_64.zip --repo WXGopher/atoll
 ```
 
 See the [feature roadmap](docs/ROADMAP.md) for gaps compared with open-vibe-island, including the delivered F01–F03 scope and candidate update/remote-session features; more agents, notification preferences and language switching are not planned. Maintenance work is tracked separately in [known issues](docs/KNOWN_ISSUES.md).

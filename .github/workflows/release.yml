@@ -19,10 +19,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --locked -- --test-threads=1
 
       - name: Build
-        run: cargo build --workspace --release
+        run: cargo build --workspace --release --locked
 
       - name: Package
         shell: pwsh
