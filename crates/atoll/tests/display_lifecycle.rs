@@ -99,7 +99,11 @@ fn hooks_control_visibility_and_restarts_preserve_the_last_display() {
     let path = root.join("display.json");
     let now = atoll_core::now_unix_secs();
     let pipe = format!("atoll-display-test-{}-{now}", std::process::id());
-    fs::write(root.join("config.json"), r#"{"taskbar":{"enabled":false}}"#).unwrap();
+    fs::write(
+        root.join("config.json"),
+        r#"{"taskbar":{"enabled":false},"completionNotifications":false}"#,
+    )
+    .unwrap();
     let previous = json!({
         "claude":{"visible":true,"lastSeen":now-3600},
         "usage":{"claude":{"limits":[{

@@ -227,7 +227,7 @@ impl SessionState {
                 // terminal) and must not disturb the phase.
                 self.resolve(&correlation_key(payload));
             }
-            events::STOP => {
+            events::STOP | events::INTERRUPT => {
                 self.pending.clear();
                 self.phase = Phase::Completed;
             }
@@ -564,6 +564,33 @@ impl AgentTasks {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_interrupt_clears_the_wait_and_log_scans_preserve_hook_ancestry() {
+        let mut table = SessionTable::new();
+        let approval: HookPayload = serde_json::from_value(serde_json::json!({
+            "session_id":"codex-session", "hook_event_name":"PermissionRequest", "tool_name":"Bash",
+            "atollTerminal":{"env":{},"hookPid":43,"ancestors":[{"pid":42,"exe":"windowsterminal.exe"}]}
+        }))
+        .unwrap();
+        table.apply(&approval, HookSource::Codex, 100);
+        table.sync_observed(
+            HookSource::Codex,
+            vec![SessionState::new("codex-session", HookSource::Codex, 101)],
+            101,
+        );
+        let state = table.get("codex-session").unwrap();
+        assert_eq!(state.phase, Phase::WaitingForApproval);
+        assert!(state.terminal.is_some());
+        let interrupt: HookPayload = serde_json::from_value(
+            serde_json::json!({"session_id":"codex-session", "hook_event_name":"Interrupt"}),
+        )
+        .unwrap();
+        table.apply(&interrupt, HookSource::Codex, 102);
+        let state = table.get("codex-session").unwrap();
+        assert_eq!(state.phase, Phase::Completed);
+        assert!(state.pending.is_empty());
+    }
     use serde_json::json;
 
     /// Baseline for the synthetic clock; any constant works, this one just reads

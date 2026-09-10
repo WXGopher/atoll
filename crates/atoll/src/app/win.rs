@@ -24,6 +24,8 @@ use windows::core::{BOOL, PCWSTR};
 
 mod readout;
 pub use readout::prepare as prepare_readout;
+mod preview;
+pub use preview::set_no_activate;
 
 #[cfg(test)]
 mod readout_tests;
@@ -626,6 +628,18 @@ pub fn activate_terminal_from(
     }
     crate::util::debug_log("jump: chain alive but nobody owns a window");
     false
+}
+
+/// Only a still-matching process can suppress a session's completion toast.
+pub fn terminal_is_foreground(ancestors: &[atoll_core::protocol::ProcessRef]) -> bool {
+    let Some(foreground) = foreground_window() else {
+        return false;
+    };
+    let alive = process_exes();
+    live_candidates(&alive, ancestors, std::process::id())
+        .into_iter()
+        .filter_map(main_window_of)
+        .any(|window| within_window(Some(foreground), Some(window)))
 }
 
 /// Put the tab whose title matches `hint` in front, via UI Automation.

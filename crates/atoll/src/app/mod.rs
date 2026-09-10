@@ -33,6 +33,9 @@ mod display;
 mod flyout;
 mod icon;
 pub mod net;
+mod notifications;
+#[cfg(test)]
+mod panel_render_tests;
 mod sessions;
 mod settings;
 mod taskbar;
@@ -47,7 +50,7 @@ pub mod ui {
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -106,6 +109,16 @@ pub fn pump() {
     }
 }
 
+fn notification_clicked(session_id: &str) {
+    if let Some(app) = APP.with(|slot| slot.borrow().clone()) {
+        app.close_flyout();
+        if let Some(taskbar) = app.host.get().or_else(win::taskbar) {
+            app.show_flyout(taskbar.rect, Anchor::Tray, false);
+        }
+        app.jump(session_id);
+    }
+}
+
 pub fn run() -> io::Result<()> {
     // `atoll` is a console binary so `atoll setup` and `atoll headless` can
     // print. The app has nothing to say on a terminal, so it lets go of the one
@@ -143,6 +156,8 @@ struct App {
     host: Cell<Option<win::Taskbar>>,
     flyout: ui::FlyoutWindow,
     flyout_open: Cell<bool>,
+    flyout_peek: Cell<bool>,
+    hover: RefCell<flyout::Hover>,
     flyout_anchor: Cell<Option<(Rect, Anchor)>>,
     flyout_dismissal: RefCell<Option<flyout::Dismissal>>,
     /// The panel's OS window, once it has been taken out of the taskbar. Kept
@@ -155,6 +170,8 @@ struct App {
 
     table: RefCell<SessionTable>,
     codex_sessions: sessions::CodexWatcher,
+    completions: RefCell<notifications::Tracker>,
+    notifier: notifications::Notifier,
     /// Hooks that are blocked on us, keyed by session and correlation key.
     /// Holding the handle is what keeps the agent waiting.
     blocked: RefCell<HashMap<(String, String), ConnectionHandle>>,
@@ -211,6 +228,8 @@ impl App {
             host: Cell::new(None),
             flyout,
             flyout_open: Cell::new(false),
+            flyout_peek: Cell::new(false),
+            hover: RefCell::new(flyout::Hover::default()),
             flyout_anchor: Cell::new(None),
             flyout_dismissal: RefCell::new(None),
             flyout_handle: Cell::new(None),
@@ -218,6 +237,8 @@ impl App {
             tray: RefCell::new(None),
             table: RefCell::new(SessionTable::new()),
             codex_sessions: sessions::CodexWatcher::new(),
+            completions: RefCell::new(notifications::Tracker::default()),
+            notifier: notifications::Notifier::new(),
             blocked: RefCell::new(HashMap::new()),
             queue: RefCell::new(VecDeque::new()),
             current: RefCell::new(None),
@@ -446,7 +467,7 @@ impl App {
                 match app.bar.poll_click() {
                     Some(taskbar::Click::Toggle) => app.toggle_flyout_beside_bar(),
                     Some(taskbar::Click::Menu) => app.readout_menu(),
-                    None => {}
+                    None => app.poll_peek(),
                 }
             },
         );
@@ -522,17 +543,10 @@ impl App {
                 .borrow_mut()
                 .insert((card.session_id.clone(), card.key.clone()), handle);
             self.queue.borrow_mut().push_back(card);
-        } else if payload.event_name() == events::STOP && payload.session_id.is_some() {
-            let summary = transcript_summary(payload.transcript_path.as_deref());
-            self.queue.borrow_mut().push_back(Card::completed(
-                &payload,
-                source,
-                summary.as_deref(),
-                now,
-            ));
         }
 
         self.table.borrow_mut().apply(&payload, source, now);
+        self.notify_completions(now);
         self.display.borrow_mut().activate(source, now, now);
         if payload.event_name() == events::SESSION_END
             && self.table.borrow().tasks(source, now).total() == 0
@@ -555,9 +569,6 @@ impl App {
         let Some(card) = current.as_ref() else {
             return false;
         };
-        if !card.needs_an_answer() {
-            return false;
-        }
         let settled = self
             .table
             .borrow()
@@ -585,49 +596,24 @@ impl App {
                 return;
             };
             // Skip a card whose hook has already given up waiting.
-            if card.needs_an_answer() {
-                let open = self
-                    .blocked
-                    .borrow()
-                    .get(&(card.session_id.clone(), card.key.clone()))
-                    .map(ConnectionHandle::is_open)
-                    .unwrap_or(false);
-                if !open {
-                    continue;
-                }
+            let open = self
+                .blocked
+                .borrow()
+                .get(&(card.session_id.clone(), card.key.clone()))
+                .map(ConnectionHandle::is_open)
+                .unwrap_or(false);
+            if !open {
+                continue;
             }
             self.touched.set(false);
-            let kind = card.kind;
             *self.current.borrow_mut() = Some(card);
-            self.arm_dismissal(kind);
-            return;
-        }
-    }
-
-    /// A finished turn takes itself down after a moment. An unanswered approval
-    /// does not: it is the whole reason Atoll exists.
-    fn arm_dismissal(self: &Rc<Self>, kind: CardKind) {
-        if kind != CardKind::Completed {
             self.dismiss_timer.stop();
             return;
         }
-        let app = Rc::downgrade(self);
-        self.dismiss_timer.start(
-            slint::TimerMode::SingleShot,
-            Duration::from_secs(card::COMPLETED_DWELL_SECS),
-            move || {
-                if let Some(app) = app.upgrade() {
-                    app.dismiss();
-                }
-            },
-        );
     }
 
     fn on_hover(self: &Rc<Self>, inside: bool) {
-        let Some(kind) = self.card_view.kind() else {
-            return;
-        };
-        if kind == CardKind::Completed {
+        if self.card_view.kind().is_none() {
             return;
         }
         if inside {
@@ -665,6 +651,12 @@ impl App {
     /// Connect the flyout's one interaction: a click on a session row brings
     /// that session's terminal window to the front.
     fn wire_flyout(self: &Rc<Self>) {
+        let app = Rc::downgrade(self);
+        self.flyout.on_expand(move || {
+            if let Some(app) = app.upgrade() {
+                app.toggle_flyout_beside_bar();
+            }
+        });
         let app = Rc::downgrade(self);
         self.flyout.on_jump(move |id| {
             if let Some(app) = app.upgrade() {
@@ -986,6 +978,9 @@ impl App {
 
     fn poll_codex_sessions(&self) -> bool {
         let update = self.codex_sessions.poll(&mut self.table.borrow_mut());
+        if update.changed {
+            self.notify_completions(now_unix_secs());
+        }
         if let Some(at) = update.last_seen {
             self.display.borrow_mut().observe(HookSource::Codex, at);
             if update.new_activity {
@@ -997,6 +992,23 @@ impl App {
             }
         }
         self.display.borrow().is_live() && (update.changed || update.new_activity)
+    }
+
+    fn notify_completions(&self, now: u64) {
+        let enabled = self.config.borrow().completion_notifications;
+        let watching_panel = self.flyout_open.get() && !self.flyout_peek.get();
+        let notices =
+            self.completions
+                .borrow_mut()
+                .observe(&self.table.borrow(), now, enabled, |session| {
+                    (watching_panel && self.display.borrow().visible(session.source))
+                        || session.terminal.as_ref().is_some_and(|terminal| {
+                            win::terminal_is_foreground(&terminal.ancestors)
+                        })
+                });
+        for notice in notices {
+            self.notifier.send(notice);
+        }
     }
 
     /// Refresh only the agent that produced activity. A cached Claude quota
@@ -1167,6 +1179,64 @@ impl App {
 
     fn toggle_flyout(self: &Rc<Self>, anchor: Rect, from: Anchor) {
         if self.flyout_open.get() {
+            let was_peek = self.flyout_peek.get();
+            self.close_flyout();
+            if !was_peek {
+                self.hover.borrow_mut().suppress_until_exit();
+                return;
+            }
+        }
+        self.show_flyout(anchor, from, false);
+    }
+
+    fn poll_peek(self: &Rc<Self>) {
+        if self.flyout_open.get() && !self.flyout_peek.get() {
+            self.hover.borrow_mut().reset();
+            return;
+        }
+        let Some(handle) = self.flyout_handle.get() else {
+            return;
+        };
+        let at = win::cursor_position().and_then(|(x, y)| win::window_at(x, y));
+        let launcher = win::within_window(at, self.bar.window_handle());
+        let panel = self.flyout_peek.get() && win::within_window(at, Some(handle));
+        if win::mouse_buttons_down() != 0 && (launcher || panel) {
+            if !self.flyout_peek.get() {
+                self.hover.borrow_mut().reset();
+            }
+            return;
+        }
+        let waiting = self
+            .table
+            .borrow()
+            .waiting()
+            .iter()
+            .any(|state| self.display.borrow().visible(state.source));
+        let enabled = self.bar.is_shown() && waiting && win::mouse_buttons_down() == 0;
+        let action = self.hover.borrow_mut().update(
+            self.started.elapsed().as_millis() as u64,
+            launcher,
+            panel,
+            enabled,
+        );
+        match action {
+            Some(flyout::HoverAction::Open) => {
+                if let Some(taskbar) = self.host.get() {
+                    self.show_flyout(self.bar.screen_rect(taskbar), Anchor::Readout, true);
+                }
+            }
+            Some(flyout::HoverAction::Close) => self.close_flyout(),
+            None => {}
+        }
+    }
+
+    fn show_flyout(self: &Rc<Self>, anchor: Rect, from: Anchor, peek: bool) {
+        self.flyout_peek.set(peek);
+        self.flyout.set_compact(peek);
+        if let Some(handle) = self.flyout_handle.get()
+            && !win::set_no_activate(handle, peek)
+            && peek
+        {
             self.close_flyout();
             return;
         }
@@ -1207,6 +1277,8 @@ impl App {
     }
 
     fn close_flyout(&self) {
+        self.hover.borrow_mut().reset();
+        self.flyout_peek.set(false);
         self.flyout_anchor.set(None);
         self.flyout_dismissal.borrow_mut().take();
         if self.flyout_open.get() {
@@ -1274,11 +1346,25 @@ impl App {
 
     fn refresh_flyout(&self) {
         let previous_usage: Vec<ui::UsageRow> = self.flyout.get_usage_rows().iter().collect();
-        let previous_height = flyout_height(
-            self.flyout.get_sessions().row_count(),
-            usage_block_height(&previous_usage),
-        );
-        let rows = self.session_rows(usize::MAX, true);
+        let previous_height = if self.flyout_peek.get() {
+            flyout::peek_height(self.flyout.get_sessions().row_count())
+        } else {
+            flyout_height(
+                self.flyout.get_sessions().row_count(),
+                usage_block_height(&previous_usage),
+            )
+        };
+        let mut rows = self.session_rows(usize::MAX, true);
+        if self.flyout_peek.get() {
+            rows.retain(|row| {
+                matches!(
+                    row.phase.as_str(),
+                    "waitingForApproval" | "waitingForAnswer"
+                )
+            });
+            self.flyout.set_waiting_total(rows.len() as i32);
+            rows.truncate(flyout::PEEK_LIMIT);
+        }
         let visible = self.display.borrow().visible_agents();
         let (good_at, warn_at) = self.config.borrow().taskbar.thresholds();
         let usage = usage_sections(
@@ -1289,7 +1375,11 @@ impl App {
             good_at,
             warn_at,
         );
-        let height = flyout_height(rows.len(), usage_block_height(&usage));
+        let height = if self.flyout_peek.get() {
+            flyout::peek_height(rows.len())
+        } else {
+            flyout_height(rows.len(), usage_block_height(&usage))
+        };
         self.flyout.set_sessions(ModelRc::new(VecModel::from(rows)));
         self.flyout
             .set_usage_rows(ModelRc::new(VecModel::from(usage)));
@@ -1305,7 +1395,11 @@ impl App {
     fn place_flyout(&self, anchor: Rect, from: Anchor) {
         let rows = self.flyout.get_sessions().row_count();
         let usage: Vec<ui::UsageRow> = self.flyout.get_usage_rows().iter().collect();
-        let height = flyout_height(rows, usage_block_height(&usage));
+        let height = if self.flyout_peek.get() {
+            flyout::peek_height(rows)
+        } else {
+            flyout_height(rows, usage_block_height(&usage))
+        };
         let scale = {
             let scale = self.flyout.window().scale_factor();
             if scale > 0.0 { scale } else { 1.0 }
@@ -1409,6 +1503,26 @@ impl App {
             }
         });
         let app = Rc::downgrade(self);
+        window.on_install_codex(move || {
+            if let Some(app) = app.upgrade() {
+                app.run_codex_install(true);
+            }
+        });
+        let app = Rc::downgrade(self);
+        window.on_uninstall_codex(move || {
+            if let Some(app) = app.upgrade() {
+                app.run_codex_install(false);
+            }
+        });
+        let app = Rc::downgrade(self);
+        window.on_set_completion_notifications(move |enabled| {
+            if let Some(app) = app.upgrade() {
+                let mut config = app.config.borrow_mut();
+                config.completion_notifications = enabled;
+                config.save();
+            }
+        });
+        let app = Rc::downgrade(self);
         window.on_set_taskbar_enabled(move |enabled| {
             if let Some(app) = app.upgrade() {
                 app.set_taskbar_enabled(enabled);
@@ -1468,6 +1582,37 @@ impl App {
             window.set_show_codex(config.taskbar.codex);
             window.set_good_at(config.taskbar.good_at as i32);
             window.set_warn_at(config.taskbar.warn_at as i32);
+            window.set_completion_notifications(config.completion_notifications);
+        }
+
+        let codex_home = atoll_core::install::codex_home();
+        window.set_codex_present(codex_home.as_ref().is_ok_and(|home| home.is_dir()));
+        match codex_home.and_then(|home| atoll_core::install::status_codex(&home)) {
+            Ok(report) => {
+                let count = report
+                    .entries
+                    .iter()
+                    .filter(|entry| entry.installed)
+                    .count();
+                window.set_codex_installed(count > 0);
+                window.set_codex_status(if !report.enabled {
+                    "Hooks disabled in Codex configuration".into()
+                } else if count == 0 {
+                    "Session logs only · hooks not installed".into()
+                } else {
+                    format!(
+                        "{count}/{} hooks · review /hooks in Codex",
+                        report.entries.len()
+                    )
+                    .into()
+                });
+            }
+            Err(error) => {
+                window.set_codex_installed(false);
+                window.set_codex_status(
+                    format!("Could not read Codex configuration: {error}").into(),
+                );
+            }
         }
 
         // A machine with only one of the agents is a perfectly normal machine;
@@ -1577,6 +1722,24 @@ impl App {
         });
         match &outcome {
             Ok(message) => self.note_settings(message),
+            Err(error) => self.note_settings(&format!("Failed: {error}")),
+        }
+        self.refresh_settings();
+    }
+
+    fn run_codex_install(&self, install: bool) {
+        let outcome = atoll_core::install::codex_home().and_then(|home| {
+            if install {
+                let stable = atoll_core::install::install_binaries()?;
+                atoll_core::install::install_codex(&home, &stable.hook)
+            } else {
+                atoll_core::install::uninstall_codex(&home)
+            }
+        });
+        match outcome {
+            Ok(_) => self.note_settings(if install {
+                "Installed. Open /hooks in Codex to review and trust the hooks, then start a new session."
+            } else { "Removed Atoll's Codex hooks." }),
             Err(error) => self.note_settings(&format!("Failed: {error}")),
         }
         self.refresh_settings();
@@ -1821,20 +1984,6 @@ fn remove_legacy_startup_shortcut() {
     if let Some(link) = legacy_startup_shortcut() {
         let _ = std::fs::remove_file(link);
     }
-}
-
-/// The last thing the agent said, from its transcript.
-///
-/// Read on `Stop` only. It is a whole-file scan, and `Stop` is both the one time
-/// there is a finished message worth quoting and a moment when nothing else is
-/// competing for this thread.
-fn transcript_summary(path: Option<&str>) -> Option<String> {
-    let path = Path::new(path?);
-    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
-    transcript::read_transcript(path, modified)
-        .ok()
-        .flatten()?
-        .title
 }
 
 #[cfg(test)]

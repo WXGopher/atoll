@@ -3,7 +3,7 @@ import { Theme, ActionButton } from "common.slint";
 // The card: the one window Atoll opens on its own initiative.
 //
 // It exists only while a session needs something — a tool approval, an answer
-// to a question, or a word that a turn finished — and it is gone the rest of
+// to a question — and it is gone the rest of
 // the time. There is no resting window any more: the numbers live in the
 // taskbar readout, and this appears beside it when a human is actually being
 // asked.
@@ -20,7 +20,7 @@ export component CardWindow inherits Window {
     always-on-top: true;
     background: transparent;
 
-    // 0 none · 1 approval · 2 question · 3 completed
+    // 0 none · 1 approval · 2 question
     in property <int> card: 0;
     in property <string> card-source: "claude";
     in property <string> card-title;
@@ -95,7 +95,7 @@ export component CardWindow inherits Window {
                     border-radius: 4px;
                     y: 4px;
                     background: root.card-accent;
-                    opacity: root.card == 3 ? 0.45 : (root.pulse ? 1.0 : 0.4);
+                    opacity: root.pulse ? 1.0 : 0.4;
                     animate opacity { duration: 700ms; easing: ease-in-out; }
                 }
                 Text {

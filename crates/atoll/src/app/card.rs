@@ -15,9 +15,6 @@ use crate::util::{one_line, project_name, truncate};
 /// question with more options than this is one to answer in the terminal.
 pub const MAX_OPTIONS: usize = 4;
 
-/// How long a completed-turn card stays up before it collapses on its own.
-pub const COMPLETED_DWELL_SECS: u64 = 3;
-
 /// The grace period after the pointer leaves a card that the user has actually
 /// looked at. A card they never touched stays until they deal with it.
 pub const HOVER_DWELL_SECS: u64 = 30;
@@ -30,8 +27,7 @@ pub struct Card {
     /// [`atoll_core::state::correlation_key`].
     pub key: String,
     /// The event this card answers, which decides the reply shape. Always
-    /// `PermissionRequest` for a card that takes a decision; `Stop` for one that
-    /// only reports.
+    /// `PermissionRequest` for approval and question cards.
     pub event: String,
     pub source: HookSource,
     /// The project the session is working in.
@@ -66,6 +62,9 @@ impl Card {
             return None;
         }
         let question = payload.tool_name.as_deref() == Some(ASK_USER_QUESTION);
+        if question && source == HookSource::Codex {
+            return None;
+        }
         let (text, options) = if question {
             parse_question(payload.tool_input.as_ref())
         } else {
@@ -104,40 +103,6 @@ impl Card {
             tool_input: payload.tool_input.clone(),
             created_at: now,
         })
-    }
-
-    /// The card for a turn that just finished.
-    pub fn completed(
-        payload: &HookPayload,
-        source: HookSource,
-        summary: Option<&str>,
-        now: u64,
-    ) -> Self {
-        Self {
-            kind: CardKind::Completed,
-            session_id: payload.session_id.clone().unwrap_or_default(),
-            key: String::new(),
-            event: payload.event_name().to_string(),
-            source,
-            title: title_for(payload),
-            tool: "done".to_string(),
-            // A transcript Atoll cannot read — a fresh session, a path that
-            // moved — still gets a card that says something, rather than an
-            // empty line where the summary would have been.
-            detail: summary
-                .map(|text| truncate(&one_line(text), 90))
-                .filter(|text| !text.is_empty())
-                .unwrap_or_else(|| "Turn finished.".to_string()),
-            options: Vec::new(),
-            question: String::new(),
-            tool_input: None,
-            created_at: now,
-        }
-    }
-
-    /// Whether the card is answered by the user rather than by a timer.
-    pub fn needs_an_answer(&self) -> bool {
-        !matches!(self.kind, CardKind::Completed)
     }
 
     /// The decision for a tapped Allow or Deny.
@@ -311,7 +276,6 @@ mod tests {
         assert_eq!(card.tool, "Bash");
         assert_eq!(card.detail, "git status --short");
         assert_eq!(card.key, "tu-1");
-        assert!(card.needs_an_answer());
     }
 
     /// The defect this guards: a card per `PreToolUse` is a card per tool call,
@@ -436,23 +400,18 @@ mod tests {
     }
 
     #[test]
-    fn a_completed_card_carries_the_last_message_and_expires_on_its_own() {
+    fn completion_and_codex_questions_do_not_raise_approval_cards() {
         let stop = payload(json!({
             "hook_event_name": "Stop",
             "session_id": "s-1",
             "cwd": r"C:\synthetic\atoll",
         }));
-        let card = Card::completed(&stop, HookSource::Claude, Some("Rebuilt\n  the index"), NOW);
-        assert_eq!(card.kind, CardKind::Completed);
-        assert_eq!(card.detail, "Rebuilt the index");
-        assert!(!card.needs_an_answer());
-
-        // A session whose transcript said nothing still gets a readable card.
-        let silent = Card::completed(&stop, HookSource::Claude, None, NOW);
-        assert_eq!(silent.detail, "Turn finished.");
-        assert_eq!(
-            Card::completed(&stop, HookSource::Claude, Some("  \n "), NOW).detail,
-            "Turn finished."
+        assert!(Card::for_request(&stop, HookSource::Claude, NOW).is_none());
+        assert!(Card::for_request(&stop, HookSource::Codex, NOW).is_none());
+        let question = payload(
+            json!({"hook_event_name":"PermissionRequest", "session_id":"s-1", "tool_name":ASK_USER_QUESTION}),
         );
+        assert!(Card::for_request(&question, HookSource::Codex, NOW).is_none());
+        assert!(Card::for_request(&question, HookSource::Claude, NOW).is_some());
     }
 }

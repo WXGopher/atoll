@@ -41,7 +41,6 @@ pub enum CardKind {
         /// Rust is what sizes the window the text is laid out inside.
         lines: usize,
     },
-    Completed,
 }
 
 impl CardKind {
@@ -50,7 +49,6 @@ impl CardKind {
         match self {
             CardKind::Approval => 1,
             CardKind::Question { .. } => 2,
-            CardKind::Completed => 3,
         }
     }
 }
@@ -77,7 +75,6 @@ pub fn card_height(kind: CardKind) -> f32 {
             let lines = lines.clamp(1, MAX_BODY_LINES) as f32;
             base + lines * BODY_LINE + 8.0 + options * 30.0 + (options - 1.0) * 6.0
         }
-        CardKind::Completed => base + BODY_LINE,
     }
 }
 
@@ -513,7 +510,6 @@ mod tests {
             lines: 1,
         });
         assert_eq!(four - one, 3.0 * 36.0);
-        assert!(card_height(CardKind::Completed) < card_height(CardKind::Approval));
         // Even a malformed question with no options gets a card with room for
         // one, rather than a zero-height sliver.
         assert_eq!(

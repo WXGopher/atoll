@@ -71,6 +71,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value};
 
+#[cfg(feature = "server")]
+mod codex;
+#[cfg(feature = "server")]
+pub use codex::{
+    CODEX_HOOKS, CodexReport, codex_home, install_codex, status_codex, uninstall_codex,
+};
+
 /// Substring that marks a hook entry as Atoll's. Present in every `command`
 /// Atoll writes, because the command is a path ending in `atoll-hook.exe`.
 pub const MANAGED_MARKER: &str = "atoll-hook";
@@ -335,7 +342,12 @@ fn binary_name(stem: &str) -> String {
 fn replace_file(source: &Path, target: &Path) -> io::Result<()> {
     match fs::copy(source, target) {
         Ok(_) => return Ok(()),
-        Err(error) if error.kind() != io::ErrorKind::PermissionDenied => return Err(error),
+        Err(error)
+            if error.kind() != io::ErrorKind::PermissionDenied
+                && !(cfg!(windows) && error.raw_os_error() == Some(32)) =>
+        {
+            return Err(error);
+        }
         Err(_) => {}
     }
 
@@ -1383,6 +1395,33 @@ mod tests {
             "type": "command",
             "command": "atoll-adjacent-tool",
         })));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn replacement_handles_a_running_binary_sharing_violation() {
+        use std::io::Read;
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("new.exe");
+        let target = dir.path().join("atoll.exe");
+        fs::write(&source, b"new version").unwrap();
+        fs::write(&target, b"old version").unwrap();
+        // A running image permits rename/delete, but refuses writes to its file.
+        let mut running = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1 | 4)
+            .open(&target)
+            .unwrap();
+        assert_eq!(
+            fs::copy(&source, &target).unwrap_err().raw_os_error(),
+            Some(32)
+        );
+        replace_file(&source, &target).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"new version");
+        let mut old = String::new();
+        running.read_to_string(&mut old).unwrap();
+        assert_eq!(old, "old version");
     }
 
     /// Whatever `settings.json` names runs on every hook and every turn, so it

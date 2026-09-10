@@ -1,129 +1,51 @@
-# Roadmap
+# Atoll 功能路线图
 
-This is the working list of what Atoll does next. It is a note to whoever picks
-the project up rather than a schedule: nothing here carries a date, and the
-order is closer to "what is worth doing" than to "what happens first".
+路线图描述用户能做什么，以及还缺哪一步。状态以当前源码为准，不代表发布日期；编译、内部重构和常量调整不作为功能里程碑。
 
-## Done
+## 本轮功能
 
-- **The readout, the panel and the tray icon.** A dot per agent and its tightest
-  rate-limit window, inside the taskbar, parked just clear of the notification
-  area and moving along on its own as the tray grows. Behind it, a panel listing
-  every session Atoll is tracking and every rate-limit window either agent has
-  reported. The same panel opens from the tray icon, and the readout re-attaches
-  by itself when the shell restarts.
-- **Approvals answered from the card.** A card opens beside the readout when
-  Claude Code is about to ask a human, and Allow, Deny or an answer to a question
-  goes back to the live session. Tool calls the user's own settings already allow
-  never raise a card, a card that has been seen collapses on its own, and a card
-  dragged somewhere better stays there.
-- **Hooks that are only ever added to.** `atoll setup install claude` copies the
-  binaries somewhere stable and appends its hooks alongside whatever is already
-  there; `status` says what is wired up and whether the transcripts are readable;
-  `uninstall` takes back exactly what was added. `atoll headless` runs the same
-  pipe server with no windows and prints the event stream.
-- **Usage that costs almost nothing.** Claude Code's windows come from the same
-  OAuth endpoint its own tooling reads, reusing any reading another tool on the
-  machine already fetched, and a 429 puts the fetcher to sleep rather than into a
-  retry loop. Codex's windows come from its rollout files.
-- **Codex sessions without setup.** Local rollout events populate the panel,
-  taskbar task line and tray count, including when Atoll starts mid-turn. A
-  background scan follows new events every two seconds, checks resumed logs in
-  older directories, and ages sessions by event time rather than scan time.
-- **Settings, a right-click menu, and machines that run one agent.** Right-click
-  the readout for Settings and Quit. The settings window turns run-at-login on
-  and off, shows or hides each agent's block in the readout, and moves the two
-  colour thresholds. The readout carries a task line per agent, and a machine
-  with only one agent installed gives the other's rows back to the taskbar.
-- **Releases anyone can check.** Zips are built and published by the release
-  workflow on GitHub's own runners, each with its SHA-256 and a signed build
-  provenance attestation tying it to the commit and workflow run that produced
-  it.
-- **Jumping back to a session's terminal.** A session row in the panel is a
-  door: click it and the terminal window that owns the session comes to the
-  front. The hook records its process ancestry — pids and executable names —
-  at event time, the one moment the whole chain is certainly alive; a click
-  raises the nearest entry still running the same executable that owns a real
-  window. Windows Terminal keeps one process per window, so with several open
-  the right one rises; VS Code's integrated terminal resolves through the pty
-  host the same way. Inside the window, the session's own pane is found by
-  what it shows on screen — panes carry no usable names — and focused; a tab
-  matched by title is the fallback. Rows whose terminal is unknown draw no
-  affordance and eat no clicks.
+| 编号 | 功能 | 当前能力 | 边界 |
+| --- | --- | --- | --- |
+| 1 | 悬停查看待处理会话 | 在任务栏停留后预览等待审批或回答的会话；移开收起；可进入完整详情 | 预览不抢焦点，最多显示六条；没有待处理会话时不展开 |
+| 2 | 在 Atoll 处理 Codex 工具审批 | 安装、检查和卸载 Codex hooks；允许或拒绝实际发起的工具审批；点击带终端信息的会话返回窗口 | 新 hooks 需要在 Codex 的 `/hooks` 中信任；Codex 的自由提问回复和桌面应用精确会话跳转另列后续功能 |
+| 3 | 后台任务完成通知 | Claude Code 和 Codex 的长任务完成后显示 Windows 通知；设置中可关闭；Atoll 运行期间点击返回会话 | 不补发历史完成记录，不提示短任务、中断任务；查看详情或对应终端窗口在前台时不提醒，系统通知设置仍然有效 |
 
-## Next: platform work
+## 已有能力
 
-The things the README calls planned, in roughly the order they are likely
-to land.
+- 在 Windows 任务栏查看 Claude Code、Codex 的额度与运行、等待、完成状态。
+- 点击打开会话和额度详情，点击外部或切换窗口自动收起。
+- 通过 Claude Code hooks 处理工具审批和单个选择题，并跳回对应终端。
+- 无需安装 hooks 即可从 Codex 本地日志发现会话、读取额度。
+- 恢复上次显示状态，按实际活动显示代理；支持开机启动、代理显隐和额度颜色设置。
+- 保留用户已有 hooks，安装前备份，卸载仅移除 Atoll 添加的条目。
 
-- **Hover peek on the readout.** Hovering the readout for a beat opens a
-  compact card listing only the sessions waiting on the human, and it goes
-  away when the pointer does, without ever taking focus. Same FlyoutWindow in
-  a compact mode — not a new window class — and the hover detection rides the
-  Windows polling the readout already runs for its clicks.
-- **Codex hook installation.** `atoll setup install codex` currently fails with
-  "not implemented yet". What it needs is `~/.codex/config.toml` and its hooks
-  file, wired with the same add-only, take-back-exactly-what-was-added
-  discipline the Claude Code side already has. Rollout files already provide
-  Codex's rate limits and running/completed session state. Approval replies and
-  jumping back to the session's terminal still need live integration.
-- **Toast notifications.** A card appears when a session wants an answer.
-  Nothing appears when a long run finishes with nothing to ask, which is the
-  other moment worth interrupting somebody for. This wants a toast, and a switch
-  to turn it off, and enough restraint that the toast never arrives for work the
-  user is already watching.
+## 接下来要补齐的功能
 
-## Refinements under consideration
+对照 [Open Island README](https://github.com/Octane0411/open-vibe-island/blob/334c58073ec0ea8a1b34da0c71f969b1affd0959/README.md) 与其 [路线图](https://github.com/Octane0411/open-vibe-island/blob/334c58073ec0ea8a1b34da0c71f969b1affd0959/docs/roadmap.zh-CN.md)，比较基线为 2026-09-10。Open Island 是 macOS 产品；这里保留对 Windows 用户有价值的能力，不照搬刘海屏或 Apple 平台形态。
 
-Everything below is currently a constant in the code that has not yet needed
-changing. They are candidates, not commitments. Each one costs a setting
-somebody has to understand, and the present default is the right answer on most
-machines, so the bar for opening one up is a concrete complaint rather than a
-suspicion that it might be wrong.
+| 编号 | 功能 | 用户希望做到什么 | Atoll 目前缺什么 | 优先级 |
+| --- | --- | --- | --- | --- |
+| F01 | Codex 桌面会话直达 | 点击一条会话，打开桌面应用中的对应对话 | 识别桌面会话并使用受支持的对话定位接口；目前主要依靠日志及终端窗口信息 | 高 |
+| F02 | 更完整的提问回复 | 在卡片里回答多题、多选或自由文本问题 | Claude 目前只支持单个选择题；Codex 提问需要独立于工具审批的接入方式 | 高 |
+| F03 | 更多终端和 IDE 的精确跳转 | 返回正确的窗口、标签页和分屏 | 补齐 Windows Terminal 隐藏标签页、运行中分屏，并验证更多 Windows IDE/终端 | 高 |
+| F04 | 更多代理 | 用一个界面管理 Cursor、Gemini CLI、OpenCode 等 | 当前仅支持 Claude Code 和 Codex；逐个补齐会话、审批和跳转能力 | 中 |
+| F05 | 通知偏好与声音 | 按代理选择完成提醒、审批提醒和提示音；程序退出后也能从通知恢复会话 | 目前只有后台完成通知总开关，默认静音；通知点击回调依赖正在运行的 Atoll | 中 |
+| F06 | 中文与英文界面 | 在设置中选择界面语言 | README 双语，程序界面目前主要为英文 | 中 |
+| F07 | 检查更新与升级 | 在程序内发现新版并完成可验证的升级 | 目前仍需手动下载或重新构建安装；需要 Windows 升级和回退流程 | 中 |
+| F08 | WSL / SSH 会话 | 在 Windows 任务栏查看远端工作，并返回连接它的终端 | 本地管道和 Windows 进程信息尚未覆盖远端；上游 SSH 精确跳转也仍是规划项 | 候选 |
+| F09 | 更完整的桌面代理支持 | Claude / Codex 桌面应用的会话随应用存活，不依赖临时子进程 | 需要分别验证 Windows 桌面应用生命周期及可用接口 | 候选 |
 
-- **Refresh cadence.** A usage reading is reused for thirty seconds, and opening
-  the panel accepts one no older than fifteen. Both are tuned for a machine
-  where some other tool is also fetching; a machine where Atoll is the only
-  reader could afford to be slower still.
-- **Backoff after a failed fetch.** A rate-limited fetch waits two minutes, a
-  transient failure fifteen seconds, and a missing token ten. These are the
-  numbers most likely to want tuning per network rather than per taste.
-- **Margins and sizes.** The gap the readout keeps from the notification area,
-  the panel's width, and the card's. A dense taskbar and a 4K one do not want
-  the same numbers.
-- **How long a card lingers.** A card collapses shortly after the session moves
-  on, and a card being hovered gets a longer stay of execution. Somebody who
-  works with the card as a running log would want both longer.
-- **Staleness and expiry.** An approval nobody answered is dropped after three
-  minutes, on the reasoning that the agent has long since fallen back to
-  prompting in its own terminal, and a session with nothing to say goes quiet
-  after fifteen. Both would be worth exposing if a slow machine or a long
-  approval turned either into a card that vanishes too early.
+“高 / 中”用于讨论先后，“候选”需要具体使用场景后再排期。上游已支持的功能也需要重新验证 Windows 适配，不能据此视为 Atoll 已实现。
 
-## Known rough edges
+## 按反馈再决定的体验设置
 
-- **The right-click menu ignores dark mode.** The menus on the readout and the
-  tray icon are classic Win32 menus, which render in the system's light theme
-  regardless of what the rest of Atoll is doing. Making them follow dark mode
-  means undocumented uxtheme calls, which is a real cost for a cosmetic fix.
-- **The pipe carries the default security descriptor.** Another local account
-  can open a client handle and inject synthetic events. It cannot impersonate
-  the server or forge an approval — the reply path runs the other way — so this
-  is noise injection rather than privilege escalation, but the pipe should be
-  bound with an explicit DACL granting only the current user.
-- **The screenshots in the README are behind the UI.** They predate the task
-  lines in the readout and the current settings page, and want retaking.
-- **The bring-up log stamps events in UTC.** Local time needs either a date-time
-  dependency or a `GetLocalTime` call, and neither has been worth it for a log
-  that is only read while something is broken.
-- **The jump reads only the visible tab's panes.** Pane matching goes by the
-  text each pane has on screen, read through UI Automation — but Windows
-  Terminal only exposes the active tab's panes, so a session parked behind
-  another tab falls back to tab-title matching, and titles are whatever the
-  shell's prompt theme last wrote. Iterating the tabs — select, scan, restore
-  — would close the gap at the cost of visible flicker.
-- **A running session's pane may not match.** The pane is identified by the
-  session's last assistant message being on screen, which is true of a
-  session waiting on a human — the case a jump exists for — and often false
-  of one mid-turn, whose screen is tool status. Those land on the window and
-  log why.
+- 调整额度刷新及失败重试频率，适应不同网络环境。
+- 调整面板尺寸、任务栏间距和卡片停留时间。
+- 调整审批过期、会话静默规则，适应长时间等待的工作。
+
+这些都是可选体验改进，不与上面的主要功能等同排期。显示细节和已知缺陷移至 [已知问题](KNOWN_ISSUES.md)。
+
+## 接入依据
+
+- [Codex hooks](https://learn.chatgpt.com/docs/hooks)：工具审批通过 `PermissionRequest` 的允许/拒绝结果回传；提问回复不能用该事件的工具输入改写来代替。
+- [Windows 桌面通知](https://learn.microsoft.com/en-us/windows/win32/shell/quickstart-sending-desktop-toast)：使用 Atoll 自己的应用标识和开始菜单快捷方式。

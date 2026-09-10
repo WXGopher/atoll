@@ -16,8 +16,13 @@ export component FlyoutWindow inherits Window {
     no-frame: true;
     always-on-top: true;
     background: transparent;
+    // Windows' CJK-capable UI family keeps project names readable in previews.
+    default-font-family: "Microsoft YaHei UI";
 
     in property <[SessionRow]> sessions;
+    in property <bool> compact: false;
+    in property <int> waiting-total;
+    callback expand();
     // A click on a jumpable session row, carrying the session's id.
     callback jump(string);
     // A heading row per agent, then one row per rate-limit window. Built by
@@ -57,7 +62,7 @@ export component FlyoutWindow inherits Window {
             alignment: start;
 
             Text {
-                text: root.sessions.length == 0
+                text: root.compact ? root.waiting-total + " waiting for you" : root.sessions.length == 0
                     ? "No sessions detected"
                     : root.sessions.length + (root.sessions.length == 1 ? " session" : " sessions");
                 color: Theme.faint;
@@ -141,12 +146,26 @@ export component FlyoutWindow inherits Window {
                 }
             }
 
-            Rectangle {
+            if root.compact: Rectangle {
+                height: 20px;
+                Text {
+                    text: root.waiting-total > root.sessions.length ? "View all " + root.waiting-total + " waiting sessions →" : "View all sessions →";
+                    color: expand-touch.has-hover ? Theme.text : Theme.dim;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+                expand-touch := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.expand(); }
+                }
+            }
+
+            if !root.compact: Rectangle {
                 height: 1px;
                 background: Theme.hairline;
             }
 
-            VerticalLayout {
+            if !root.compact: VerticalLayout {
                 spacing: 0px;
                 if root.usage-rows.length == 0: Text {
                     text: "No usage data yet";

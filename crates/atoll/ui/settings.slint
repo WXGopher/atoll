@@ -6,9 +6,9 @@ import { Button, CheckBox, SpinBox, TabWidget, VerticalBox, HorizontalBox } from
 export component SettingsWindow inherits Window {
     title: "Atoll Settings";
     preferred-width: 460px;
-    preferred-height: 300px;
+    preferred-height: 380px;
     min-width: 420px;
-    min-height: 280px;
+    min-height: 360px;
 
     in property <bool> claude-installed;
     // Human-readable state of the hook wiring, e.g. "8 of 8 hooks installed".
@@ -16,6 +16,14 @@ export component SettingsWindow inherits Window {
     // Whether Claude Code's own directory exists on this machine at all. A
     // machine without it is a normal machine; the row says what it found.
     in property <bool> claude-present: true;
+    in property <bool> codex-installed;
+    in property <bool> codex-present: true;
+    in property <string> codex-status: "checking…";
+    callback install-codex();
+    callback uninstall-codex();
+
+    in property <bool> completion-notifications: true;
+    callback set-completion-notifications(bool);
 
     // The outcome of the last button press, shown along the bottom.
     in property <string> message;
@@ -86,6 +94,29 @@ export component SettingsWindow inherits Window {
                         }
                     }
 
+                    HorizontalBox {
+                        padding: 0px;
+                        alignment: start;
+                        spacing: 12px;
+                        VerticalLayout {
+                            alignment: center;
+                            width: 180px;
+                            Text { text: "Codex"; font-weight: 600; }
+                            Text { text: root.codex-status; font-size: 11px; wrap: word-wrap; }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Button {
+                                text: root.codex-installed ? "Uninstall" : "Install";
+                                enabled: root.codex-present;
+                                clicked => {
+                                    if (root.codex-installed) { root.uninstall-codex(); }
+                                    else { root.install-codex(); }
+                                }
+                            }
+                        }
+                    }
+
                     Text {
                         text: "The hooks are how Atoll sees your sessions: what each one is doing, and when one stops to ask you something. They are added alongside anything you already have, and uninstalling removes exactly what was added.";
                         font-size: 11px;
@@ -106,6 +137,12 @@ export component SettingsWindow inherits Window {
                         toggled => {
                             root.set-run-at-login(self.checked);
                         }
+                    }
+
+                    CheckBox {
+                        text: "Notify when a background task finishes";
+                        checked: root.completion-notifications;
+                        toggled => { root.set-completion-notifications(self.checked); }
                     }
 
                     Rectangle {
@@ -154,7 +191,7 @@ export component SettingsWindow inherits Window {
                         spacing: 8px;
                         VerticalLayout {
                             alignment: center;
-                            Text { text: "Green at ≥"; }
+                            Text { text: "Green ≥"; font-size: 11px; }
                         }
                         good-spin := SpinBox {
                             minimum: 1;
@@ -166,7 +203,7 @@ export component SettingsWindow inherits Window {
                         }
                         VerticalLayout {
                             alignment: center;
-                            Text { text: "%   amber at ≥"; }
+                            Text { text: "%   Amber ≥"; font-size: 11px; }
                         }
                         warn-spin := SpinBox {
                             minimum: 0;
@@ -178,7 +215,7 @@ export component SettingsWindow inherits Window {
                         }
                         VerticalLayout {
                             alignment: center;
-                            Text { text: "%, red below"; }
+                            Text { text: "%"; font-size: 11px; }
                         }
                     }
                 }

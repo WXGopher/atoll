@@ -46,6 +46,7 @@ pub fn config_path() -> io::Result<PathBuf> {
 pub struct Config {
     pub taskbar: TaskbarConfig,
     pub card: CardConfig,
+    pub completion_notifications: bool,
     /// Unknown keys are preserved on rewrite rather than silently dropped, so
     /// a config written by any other version of Atoll — older or newer —
     /// survives a run of this one with its own settings intact.
@@ -114,6 +115,7 @@ impl Default for Config {
         Self {
             taskbar: TaskbarConfig::default(),
             card: CardConfig::default(),
+            completion_notifications: true,
             extra: serde_json::Map::new(),
         }
     }

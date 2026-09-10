@@ -82,7 +82,7 @@ fn main() {
     };
 
     if let Some(reply) = exchange(line, wait_budget)
-        && let Some(stdout_json) = decision_stdout(&reply)
+        && let Some(stdout_json) = decision_stdout(&reply, source)
     {
         // print!, not println!: the decision already ends in a newline.
         let mut stdout = std::io::stdout();
@@ -320,11 +320,11 @@ fn connect(path: &str, budget: Duration) -> std::io::Result<File> {
 }
 
 /// Turn a reply line into the exact bytes the agent expects on stdout.
-fn decision_stdout(reply: &str) -> Option<String> {
+fn decision_stdout(reply: &str, source: HookSource) -> Option<String> {
     match atoll_core::protocol::decode_line(reply.trim_end()).ok()? {
         Envelope::Response {
             response: Response::Decision { decision },
-        } => Some(decision.to_stdout_json()),
+        } => decision.to_stdout_json_for(source),
         // Ack / Error / anything else: the app explicitly declined to decide.
         _ => None,
     }

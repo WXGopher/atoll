@@ -1,6 +1,76 @@
 //! Dismiss the details like a popup, even when Windows did not activate it.
 //! Inputs come from the existing pointer timer; no global mouse hook is needed.
 
+pub const PEEK_LIMIT: usize = 6;
+const PEEK_DELAY_MS: u64 = 500;
+const LEAVE_DELAY_MS: u64 = 180;
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum HoverAction {
+    Open,
+    Close,
+}
+
+/// A small grace period lets the pointer cross the gap into the preview.
+#[derive(Default)]
+pub struct Hover {
+    entered: Option<u64>,
+    left: Option<u64>,
+    open: bool,
+    suppressed: bool,
+}
+
+impl Hover {
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    pub fn suppress_until_exit(&mut self) {
+        self.reset();
+        self.suppressed = true;
+    }
+
+    pub fn update(
+        &mut self,
+        now: u64,
+        launcher: bool,
+        panel: bool,
+        enabled: bool,
+    ) -> Option<HoverAction> {
+        if self.suppressed {
+            if !launcher {
+                self.reset();
+            }
+            return None;
+        }
+        if !enabled {
+            let close = self.open;
+            self.reset();
+            return close.then_some(HoverAction::Close);
+        }
+        if self.open {
+            if launcher || panel {
+                self.left = None;
+            } else if now.saturating_sub(*self.left.get_or_insert(now)) >= LEAVE_DELAY_MS {
+                self.reset();
+                return Some(HoverAction::Close);
+            }
+        } else if launcher {
+            if now.saturating_sub(*self.entered.get_or_insert(now)) >= PEEK_DELAY_MS {
+                self.open = true;
+                return Some(HoverAction::Open);
+            }
+        } else {
+            self.entered = None;
+        }
+        None
+    }
+}
+
+pub fn peek_height(rows: usize) -> f32 {
+    28.0 + 14.0 + 10.0 + rows as f32 * 32.0 + rows.saturating_sub(1) as f32 * 9.0 + 30.0
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PointerTarget {
     Panel,
@@ -59,6 +129,56 @@ impl Dismissal {
 mod tests {
     use super::*;
     use PointerTarget::*;
+
+    #[test]
+    fn peek_waits_for_dwell_and_bridges_the_gap_without_sticking() {
+        let mut hover = Hover::default();
+        assert_eq!(hover.update(0, true, false, true), None);
+        assert_eq!(hover.update(499, true, false, true), None);
+        assert_eq!(
+            hover.update(500, true, false, true),
+            Some(HoverAction::Open)
+        );
+        assert_eq!(hover.update(600, false, false, true), None);
+        assert_eq!(hover.update(700, false, true, true), None);
+        assert_eq!(hover.update(1000, false, false, true), None);
+        assert_eq!(
+            hover.update(1180, false, false, true),
+            Some(HoverAction::Close)
+        );
+    }
+
+    #[test]
+    fn disabled_peeks_and_brief_passes_never_open() {
+        let mut hover = Hover::default();
+        hover.update(0, true, false, true);
+        hover.update(400, false, false, true);
+        assert_eq!(hover.update(501, true, false, true), None);
+        assert_eq!(hover.update(2000, true, false, false), None);
+        assert_eq!(hover.update(2001, true, false, true), None);
+        assert_eq!(
+            hover.update(2501, true, false, true),
+            Some(HoverAction::Open)
+        );
+        assert_eq!(
+            hover.update(2502, true, false, false),
+            Some(HoverAction::Close)
+        );
+    }
+
+    #[test]
+    fn explicit_close_requires_leaving_the_launcher_before_another_peek() {
+        let mut hover = Hover::default();
+        hover.suppress_until_exit();
+        assert_eq!(hover.update(0, true, false, true), None);
+        assert_eq!(hover.update(5000, true, false, true), None);
+        assert_eq!(hover.update(5001, false, false, true), None);
+        assert_eq!(hover.update(5002, true, false, true), None);
+        assert_eq!(
+            hover.update(5502, true, false, true),
+            Some(HoverAction::Open)
+        );
+    }
 
     #[test]
     fn clicking_the_desktop_closes_even_without_a_focus_change() {

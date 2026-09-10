@@ -232,7 +232,27 @@ fn native_slint_readout_stays_frameless_through_layout_and_visibility_changes() 
                     },
                 );
                 if n.is_multiple_of(2) {
+                    let handle = flyout
+                        .window()
+                        .with_winit_window(|window| {
+                            use slint::winit_030::winit::raw_window_handle::{
+                                HasWindowHandle, RawWindowHandle,
+                            };
+                            match window.window_handle().unwrap().as_raw() {
+                                RawWindowHandle::Win32(handle) => handle.hwnd.get(),
+                                _ => panic!("expected a Windows window"),
+                            }
+                        })
+                        .unwrap();
+                    let peek = n.is_multiple_of(4);
+                    set_no_activate(handle, peek);
                     flyout.show().unwrap();
+                    assert_eq!(
+                        unsafe { GetWindowLongPtrW(hwnd(handle), GWL_EXSTYLE) } as u32
+                            & WS_EX_NOACTIVATE.0
+                            != 0,
+                        peek
+                    );
                 } else {
                     flyout.hide().unwrap();
                 }

@@ -41,15 +41,6 @@ pub enum Agent {
     Codex,
 }
 
-impl Agent {
-    fn as_str(self) -> &'static str {
-        match self {
-            Agent::Claude => "claude",
-            Agent::Codex => "codex",
-        }
-    }
-}
-
 pub fn run(action: Action) -> io::Result<()> {
     match action {
         Action::Install {
@@ -147,14 +138,65 @@ pub fn run(action: Action) -> io::Result<()> {
             }
             Ok(())
         }
-        // M4 wires up ~/.codex/config.toml and hooks.json.
-        Action::Install { agent, .. } | Action::Uninstall { agent } | Action::Status { agent } => {
-            Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                format!("setup for {} is not implemented yet", agent.as_str()),
-            ))
+        Action::Install {
+            agent: Agent::Codex,
+            ..
+        } => {
+            let stable = install::install_binaries()?;
+            let report = install::install_codex(&install::codex_home()?, &stable.hook)?;
+            print_codex(&report);
+            outln!(
+                "Open /hooks in Codex to review and trust the new hooks, then start a new session."
+            );
+            Ok(())
+        }
+        Action::Uninstall {
+            agent: Agent::Codex,
+        } => {
+            print_codex(&install::uninstall_codex(&install::codex_home()?)?);
+            Ok(())
+        }
+        Action::Status {
+            agent: Agent::Codex,
+        } => {
+            print_codex(&install::status_codex(&install::codex_home()?)?);
+            outln!(
+                "Trust is managed by Codex: inspect /hooks to check whether these hooks can run."
+            );
+            Ok(())
         }
     }
+}
+
+fn print_codex(report: &install::CodexReport) {
+    outln!("config   : {}", report.config_path.display());
+    outln!("hooks    : {}", report.hooks_path.display());
+    outln!(
+        "feature  : {}",
+        if report.enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    for entry in &report.entries {
+        outln!(
+            "  {} {}",
+            if entry.installed { "ok" } else { "--" },
+            entry.event
+        );
+    }
+    for backup in &report.backups {
+        outln!("backup   : {}", backup.display());
+    }
+    outln!(
+        "{}",
+        if report.changed {
+            "updated."
+        } else {
+            "no changes written."
+        }
+    );
 }
 
 fn print_entries(entries: &[install::EntryStatus]) {

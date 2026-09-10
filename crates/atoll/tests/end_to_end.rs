@@ -133,9 +133,13 @@ struct HookRun {
 
 /// Feed `payload` to `atoll-hook` on stdin and collect what it produced.
 fn run_hook(pipe_name: &str, payload: &str, skip_hooks: bool) -> HookRun {
+    run_hook_for(pipe_name, payload, skip_hooks, "claude")
+}
+
+fn run_hook_for(pipe_name: &str, payload: &str, skip_hooks: bool, source: &str) -> HookRun {
     let mut command = Command::new(hook_exe());
     command
-        .args(["--source", "claude"])
+        .args(["--source", source])
         .env("ATOLL_PIPE_NAME", pipe_name)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -200,6 +204,77 @@ fn permission_request_gets_an_allow_decision() {
         log.iter()
             .any(|line| line.contains("PermissionRequest") && line.contains("abc12345")),
         "expected the event in the log, got {log:?}"
+    );
+}
+
+#[test]
+fn codex_permission_round_trip_uses_its_own_schema() {
+    let pipe_name = unique_pipe_name("codex-allow");
+    let server = Server::start(&pipe_name, &["--auto-allow"]);
+    server.next_line();
+    let run = run_hook_for(&pipe_name, permission_request_payload(), false, "codex");
+    assert!(run.success);
+    let decision: serde_json::Value = serde_json::from_str(run.stdout.trim()).unwrap();
+    assert_eq!(
+        decision,
+        serde_json::json!({"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}})
+    );
+    assert!(
+        server
+            .wait_for("auto-allowed")
+            .iter()
+            .any(|line| line.contains("codex"))
+    );
+}
+
+#[test]
+fn installed_codex_command_handles_shell_characters_and_forwards_stdin() {
+    let pipe_name = unique_pipe_name("codex-installed");
+    let server = Server::start(&pipe_name, &["--auto-allow"]);
+    server.next_line();
+    let dir = tempfile::tempdir().unwrap();
+    let binary_dir = dir.path().join("a space & dollar$ and 'quote'");
+    std::fs::create_dir(&binary_dir).unwrap();
+    let binary = binary_dir.join("atoll-hook.exe");
+    std::fs::copy(hook_exe(), &binary).unwrap();
+    let home = dir.path().join("codex");
+    atoll_core::install::install_codex(&home, &binary).unwrap();
+    let hooks: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(home.join("hooks.json")).unwrap()).unwrap();
+    let command = hooks["hooks"]["PermissionRequest"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap();
+    let mut child = Command::new("cmd.exe")
+        .args(["/d", "/s", "/c", command])
+        .env("ATOLL_PIPE_NAME", &pipe_name)
+        .env_remove("ATOLL_SKIP_HOOKS")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(permission_request_payload().as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let decision: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        decision["hookSpecificOutput"]["decision"],
+        serde_json::json!({"behavior":"allow"})
+    );
+    assert!(
+        server
+            .wait_for("auto-allowed")
+            .iter()
+            .any(|line| line.contains("codex"))
     );
 }
 
