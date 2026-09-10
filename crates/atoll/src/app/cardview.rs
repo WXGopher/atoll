@@ -34,6 +34,7 @@ const MARGIN: i32 = 10;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CardKind {
     Approval,
+    Form,
     Question {
         /// One button per option.
         options: usize,
@@ -47,6 +48,7 @@ impl CardKind {
     /// The discriminant `ui/card.slint` switches on.
     pub fn as_int(self) -> i32 {
         match self {
+            CardKind::Form => 3,
             CardKind::Approval => 1,
             CardKind::Question { .. } => 2,
         }
@@ -68,6 +70,7 @@ pub fn card_height(kind: CardKind) -> f32 {
         // … + spacing + one row of buttons. The summary of a tool input is
         // always elided to one line: it is a reminder of what was asked, not the
         // thing itself.
+        CardKind::Form => 520.0,
         CardKind::Approval => base + BODY_LINE + 8.0 + 30.0,
         // … + spacing + one button per option.
         CardKind::Question { options, lines } => {

@@ -135,7 +135,7 @@ impl Handler for Forwarder {
         // its own permission flow, which is what raises the `PermissionRequest`
         // below if a human is really needed.
         let reply = match claude_hook.event_name() {
-            events::PERMISSION_REQUEST => Some(connection),
+            events::PERMISSION_REQUEST | events::CODEX_USER_INPUT => Some(connection),
             events::PRE_TOOL_USE => {
                 let _ = connection.send(&Envelope::Response {
                     response: Response::Ack,

@@ -10,6 +10,7 @@ pub mod codex;
 pub mod install;
 pub mod pipe;
 pub mod protocol;
+pub mod questions;
 #[cfg(feature = "server")]
 pub mod server;
 pub mod state;

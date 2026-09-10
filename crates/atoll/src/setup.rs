@@ -37,11 +37,25 @@ pub enum Action {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum Agent {
+    /// Experimental: not validated with a real Claude Code installation.
     Claude,
     Codex,
 }
 
 pub fn run(action: Action) -> io::Result<()> {
+    if matches!(
+        &action,
+        Action::Install {
+            agent: Agent::Claude,
+            ..
+        } | Action::Uninstall {
+            agent: Agent::Claude
+        } | Action::Status {
+            agent: Agent::Claude
+        }
+    ) {
+        outln!("Claude Code support is experimental and has not been validated on this machine.");
+    }
     match action {
         Action::Install {
             agent: Agent::Claude,

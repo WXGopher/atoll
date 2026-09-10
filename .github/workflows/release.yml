@@ -28,7 +28,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force staging | Out-Null
-          Copy-Item target/release/atoll.exe, target/release/atoll-hook.exe, README.md, LICENSE staging/
+          Copy-Item target/release/atoll.exe, target/release/atoll-hook.exe, target/release/atoll-codex.exe, README.md, LICENSE staging/
           Compress-Archive -Path staging/* -DestinationPath "atoll-${{ github.ref_name }}-windows-x86_64.zip"
           Get-FileHash "atoll-${{ github.ref_name }}-windows-x86_64.zip" -Algorithm SHA256 |
             ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } |

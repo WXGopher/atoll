@@ -22,6 +22,7 @@ pub const HOVER_DWELL_SECS: u64 = 30;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Card {
     pub kind: CardKind,
+    pub form: Option<super::form::Form>,
     pub session_id: String,
     /// The pending approval this card answers; see
     /// [`atoll_core::state::correlation_key`].
@@ -58,6 +59,28 @@ impl Card {
     /// event that means a human is genuinely about to be asked, and its budget
     /// is a day, which is the protocol agreeing.
     pub fn for_request(payload: &HookPayload, source: HookSource, now: u64) -> Option<Self> {
+        if payload.event_name() == events::CODEX_USER_INPUT && source == HookSource::Codex {
+            let request = serde_json::from_value(payload.tool_input.clone()?).ok()?;
+            let form = super::form::Form::new(request)?;
+            if payload.session_id.as_deref() != Some(form.request.thread_id.as_str()) {
+                return None;
+            }
+            return Some(Self {
+                kind: CardKind::Form,
+                form: Some(form),
+                session_id: payload.session_id.clone()?,
+                key: correlation_key(payload),
+                event: events::CODEX_USER_INPUT.into(),
+                source,
+                title: title_for(payload),
+                tool: "Question".into(),
+                detail: String::new(),
+                options: Vec::new(),
+                question: String::new(),
+                tool_input: None,
+                created_at: now,
+            });
+        }
         if payload.event_name() != events::PERMISSION_REQUEST {
             return None;
         }
@@ -86,6 +109,7 @@ impl Card {
         };
 
         Some(Self {
+            form: None,
             kind,
             session_id: payload.session_id.clone().unwrap_or_default(),
             key: correlation_key(payload),

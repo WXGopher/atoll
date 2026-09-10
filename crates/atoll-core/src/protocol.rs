@@ -94,6 +94,8 @@ pub enum Command {
 pub enum Response {
     /// Received, nothing further expected.
     Ack,
+    /// A native Codex app-server answer, never a hook permission override.
+    CodexInput { answers: crate::questions::Answers },
     /// The user's (or the app's) answer to a blocking hook.
     Decision { decision: HookDecision },
     /// The app could not produce a decision; the hook fails open.
@@ -109,6 +111,7 @@ pub const TERMINAL_META_KEY: &str = "atollTerminal";
 /// Environment variables the hook forwards, when set, so the app can jump back
 /// to the terminal or editor that owns the session.
 pub const TERMINAL_ENV_VARS: &[&str] = &[
+    "ATOLL_TERMINAL_TARGET",
     "ConEmuPID",
     "SESSIONNAME",
     "TERM_PROGRAM",
@@ -201,6 +204,7 @@ pub struct TerminalMeta {
 
 /// Hook event names Atoll knows about.
 pub mod events {
+    pub const CODEX_USER_INPUT: &str = "AtollCodexUserInput";
     pub const SESSION_START: &str = "SessionStart";
     pub const SESSION_END: &str = "SessionEnd";
     pub const USER_PROMPT_SUBMIT: &str = "UserPromptSubmit";

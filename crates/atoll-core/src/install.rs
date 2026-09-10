@@ -307,6 +307,7 @@ pub fn install_binaries() -> io::Result<StableBinaries> {
 
     fs::create_dir_all(&stable_dir)?;
     let source_hook = hook_binary_path()?;
+    let source_launcher = running.with_file_name(binary_name("atoll-codex"));
     if !source_hook.exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -317,8 +318,22 @@ pub fn install_binaries() -> io::Result<StableBinaries> {
         ));
     }
 
+    if !source_launcher.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "{} is missing; build or extract all Atoll binaries before installing",
+                source_launcher.display()
+            ),
+        ));
+    }
+
     replace_file(&running, &atoll)?;
     replace_file(&source_hook, &hook)?;
+    replace_file(
+        &source_launcher,
+        &stable_dir.join(binary_name("atoll-codex")),
+    )?;
     sweep_displaced(&stable_dir);
 
     Ok(StableBinaries {

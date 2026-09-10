@@ -31,6 +31,7 @@ mod cardview;
 pub(crate) mod config;
 mod display;
 mod flyout;
+mod form;
 mod icon;
 pub mod net;
 mod notifications;
@@ -40,7 +41,7 @@ mod sessions;
 mod settings;
 mod taskbar;
 mod tray;
-mod win;
+pub(crate) mod win;
 
 /// The Slint markup, compiled by `build.rs`.
 pub mod ui {
@@ -411,6 +412,50 @@ impl App {
     /// its own; see [`cardview::CardView::ui`].
     fn wire_card(self: &Rc<Self>, ui: &ui::CardWindow) {
         let app = Rc::downgrade(self);
+        ui.on_form_edit(move |text| {
+            if let Some(app) = app.upgrade() {
+                let valid = {
+                    let mut card = app.current.borrow_mut();
+                    let Some(form) = card.as_mut().and_then(|card| card.form.as_mut()) else {
+                        return;
+                    };
+                    form.drafts[form.page].text = text.to_string();
+                    form.value(form.page).is_some()
+                };
+                if let Some(ui) = app.card_view.ui() {
+                    ui.set_form_can_next(valid);
+                }
+            }
+        });
+        let app = Rc::downgrade(self);
+        ui.on_form_choose(move |index| {
+            if let Some(app) = app.upgrade() {
+                {
+                    let mut card = app.current.borrow_mut();
+                    let Some(form) = card.as_mut().and_then(|card| card.form.as_mut()) else {
+                        return;
+                    };
+                    if index < 0
+                        || form.request.questions[form.page]
+                            .options
+                            .as_ref()
+                            .is_none_or(|options| index as usize >= options.len())
+                    {
+                        return;
+                    }
+                    form.drafts[form.page].choice = Some(index as usize);
+                    form.drafts[form.page].text.clear();
+                }
+                app.refresh_card();
+            }
+        });
+        let app = Rc::downgrade(self);
+        ui.on_form_navigate(move |direction| {
+            if let Some(app) = app.upgrade() {
+                app.form_navigate(direction);
+            }
+        });
+        let app = Rc::downgrade(self);
         ui.on_drag_delta(move |dx, dy| {
             if let Some(app) = app.upgrade() {
                 app.card_view.drag_by(dx, dy);
@@ -613,6 +658,16 @@ impl App {
     }
 
     fn on_hover(self: &Rc<Self>, inside: bool) {
+        // Do not discard multi-question drafts just because the pointer left
+        // the card while the user is typing or consulting their terminal.
+        if self
+            .current
+            .borrow()
+            .as_ref()
+            .is_some_and(|card| card.form.is_some())
+        {
+            return;
+        }
         if self.card_view.kind().is_none() {
             return;
         }
@@ -674,6 +729,18 @@ impl App {
     /// success keeps the panel around to try another row when a terminal has
     /// quietly gone away.
     fn jump(self: &Rc<Self>, session_id: &str) {
+        let target = self
+            .table
+            .borrow()
+            .get(session_id)
+            .and_then(|state| state.terminal.as_ref())
+            .and_then(win::target::from_meta);
+        if target.as_ref().is_some_and(|target| {
+            win::target::activate(target) || win::target::activate_window(target)
+        }) {
+            self.close_flyout();
+            return;
+        }
         let ancestors = self
             .table
             .borrow()
@@ -681,12 +748,6 @@ impl App {
             .and_then(|state| state.terminal.as_ref())
             .map(|terminal| terminal.ancestors.clone())
             .unwrap_or_default();
-        if ancestors.is_empty() {
-            // The markup only routes clicks on jumpable rows, so reaching
-            // here means the row and the table disagree — worth a line.
-            crate::util::debug_log(&format!("jump {session_id}: no ancestry on record"));
-            return;
-        }
         let chain: Vec<String> = ancestors
             .iter()
             .map(|entry| format!("{}:{}", entry.pid, entry.exe))
@@ -696,7 +757,25 @@ impl App {
         // its terminal tab after the same task, which is what lets the jump
         // land on the session's own tab rather than whichever was in front.
         let hint = self.titles.borrow().get(session_id).cloned();
-        if win::activate_terminal_from(&ancestors, hint.as_deref()) {
+        let source = self
+            .table
+            .borrow()
+            .get(session_id)
+            .map(|state| state.source)
+            .or_else(|| {
+                self.display
+                    .borrow()
+                    .saved_sessions(usize::MAX)
+                    .iter()
+                    .find(|row| row.id == session_id)
+                    .and_then(|row| HookSource::parse(row.source.as_str()))
+            });
+        let desktop = source == Some(HookSource::Codex)
+            && ancestors.iter().any(|process| process.exe == "chatgpt.exe");
+        if (desktop && win::codex::open_thread(session_id))
+            || (target.is_none() && win::activate_terminal_from(&ancestors, hint.as_deref()))
+            || (source == Some(HookSource::Codex) && win::codex::open_thread(session_id))
+        {
             self.close_flyout();
         }
     }
@@ -734,6 +813,51 @@ impl App {
             self.reply(&card, decision);
         }
         self.settle_after_the_click(card);
+    }
+
+    fn form_navigate(self: &Rc<Self>, direction: i32) {
+        if self.current_is_stale() {
+            self.dismiss();
+            return;
+        }
+        let response = {
+            let mut current = self.current.borrow_mut();
+            let Some(form) = current.as_mut().and_then(|card| card.form.as_mut()) else {
+                return;
+            };
+            match direction {
+                -1 if form.page > 0 => {
+                    form.page -= 1;
+                    None
+                }
+                0 => Some(Response::Ack),
+                1 if form.value(form.page).is_some() => {
+                    if form.page + 1 < form.request.questions.len() {
+                        form.page += 1;
+                        None
+                    } else {
+                        form.answers()
+                            .map(|answers| Response::CodexInput { answers })
+                    }
+                }
+                _ => None,
+            }
+        };
+        if let Some(response) = response {
+            let Some(card) = self.current.borrow().clone() else {
+                return;
+            };
+            if let Some(handle) = self
+                .blocked
+                .borrow_mut()
+                .remove(&(card.session_id.clone(), card.key.clone()))
+            {
+                let _ = handle.send(&Envelope::Response { response });
+            }
+            self.settle_after_the_click(card);
+        } else {
+            self.refresh_card();
+        }
     }
 
     fn answer(self: &Rc<Self>, option: i32) {
@@ -838,6 +962,39 @@ impl App {
                 .collect::<Vec<_>>(),
         )));
         ui.set_card_queued(self.queue.borrow().len() as i32);
+        if let Some(form) = &card.form {
+            let question = &form.request.questions[form.page];
+            let draft = &form.drafts[form.page];
+            ui.set_form_question(question.question.clone().into());
+            ui.set_form_progress(
+                format!(
+                    "{} / {} · {}",
+                    form.page + 1,
+                    form.request.questions.len(),
+                    question.header
+                )
+                .into(),
+            );
+            ui.set_form_free_text(question.free_text());
+            ui.set_form_secret(question.is_secret);
+            ui.set_form_text(draft.text.clone().into());
+            ui.set_form_can_back(form.page > 0);
+            ui.set_form_can_next(form.value(form.page).is_some());
+            ui.set_form_last(form.page + 1 == form.request.questions.len());
+            ui.set_form_options(ModelRc::new(VecModel::from(
+                question
+                    .options
+                    .iter()
+                    .flatten()
+                    .enumerate()
+                    .map(|(index, option)| ui::FormOption {
+                        label: option.label.clone().into(),
+                        description: option.description.clone().into(),
+                        selected: draft.text.trim().is_empty() && draft.choice == Some(index),
+                    })
+                    .collect::<Vec<_>>(),
+            )));
+        }
     }
 
     /// Open the window for a card, creating and wiring one if there is none, or
@@ -915,10 +1072,21 @@ impl App {
     fn session_rows(&self, limit: usize, rich: bool) -> Vec<ui::SessionRow> {
         let display = self.display.borrow();
         if !display.is_live() {
-            return display.saved_sessions(limit);
+            let available = win::codex::available();
+            return display
+                .saved_sessions(limit)
+                .into_iter()
+                .map(|mut row| {
+                    row.jumpable = available
+                        && row.source == "codex"
+                        && win::codex::thread_uri(row.id.as_str()).is_some();
+                    row
+                })
+                .collect();
         }
         let table = self.table.borrow();
         let titles = self.titles.borrow();
+        let codex_desktop = win::codex::available();
         table
             .sessions()
             .filter(|state| display.visible(state.source))
@@ -942,7 +1110,10 @@ impl App {
                     jumpable: state
                         .terminal
                         .as_ref()
-                        .is_some_and(|terminal| !terminal.ancestors.is_empty()),
+                        .is_some_and(|terminal| !terminal.ancestors.is_empty())
+                        || (state.source == HookSource::Codex
+                            && codex_desktop
+                            && win::codex::thread_uri(&state.session_id).is_some()),
                 }
             })
             .collect()
@@ -952,6 +1123,30 @@ impl App {
 
     fn housekeeping(self: &Rc<Self>) {
         let now = now_unix_secs();
+        // A live app-server question can wait longer than the log-only TTL.
+        // Its pipe is the authority; disconnects also clear queued forms.
+        {
+            let mut table = self.table.borrow_mut();
+            self.blocked.borrow_mut().retain(|(session, key), handle| {
+                let Some(state) = table.get_mut(session) else {
+                    return false;
+                };
+                if !handle.is_open() {
+                    state.resolve(key);
+                    return false;
+                }
+                if let Some(pending) = state.pending.iter_mut().find(|pending| &pending.key == key)
+                {
+                    if pending.event == events::CODEX_USER_INPUT {
+                        pending.requested_at = now;
+                        state.last_seen = now;
+                    }
+                    true
+                } else {
+                    false
+                }
+            });
+        }
         // Cheap, and the only thing that notices explorer coming back.
         self.watch_the_taskbar();
         let limits_arrived = self.collect_claude_limits();
@@ -1003,7 +1198,9 @@ impl App {
                 .observe(&self.table.borrow(), now, enabled, |session| {
                     (watching_panel && self.display.borrow().visible(session.source))
                         || session.terminal.as_ref().is_some_and(|terminal| {
-                            win::terminal_is_foreground(&terminal.ancestors)
+                            win::target::from_meta(terminal)
+                                .map(|target| win::target::is_foreground(&target))
+                                .unwrap_or_else(|| win::terminal_is_foreground(&terminal.ancestors))
                         })
                 });
         for notice in notices {

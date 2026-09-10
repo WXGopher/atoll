@@ -22,6 +22,7 @@ slint-build = "1.17.1"
 tempfile = "3"
 tokio = { version = "1", features = [
     "io-util",
+    "process",
     "macros",
     "net",
     "rt-multi-thread",
@@ -33,9 +34,11 @@ windows = { version = "0.61", features = [
     "Data_Xml_Dom",
     "Foundation",
     "UI_Notifications",
+    "Win32_Security",
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_Networking_WinHttp",
+    "Win32_System_JobObjects",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_WinRT",

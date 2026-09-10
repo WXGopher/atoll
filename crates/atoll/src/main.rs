@@ -13,6 +13,7 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod codex;
 mod headless;
 mod out;
 mod setup;
@@ -46,6 +47,8 @@ enum Command {
     },
     /// Render a status line from a payload on stdin (used by Claude Code).
     Statusline,
+    /// Launch Codex with Atoll question cards (experimental app-server transport).
+    Codex(codex::Args),
 }
 
 /// A GUI-subsystem process launched from a shell starts with no console and no
@@ -82,6 +85,7 @@ fn main() -> ExitCode {
         Some(Command::Headless(args)) => headless::run(&args),
         Some(Command::Setup { action }) => setup::run(action),
         Some(Command::Statusline) => statusline::run(),
+        Some(Command::Codex(args)) => codex::run(&args),
     };
 
     match result {

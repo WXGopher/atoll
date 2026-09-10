@@ -10,6 +10,10 @@ description = "Windows-native agent session monitor and approval hub for Claude 
 name = "atoll"
 path = "src/main.rs"
 
+[[bin]]
+name = "atoll-codex"
+path = "src/codex_main.rs"
+
 [dependencies]
 atoll-core.workspace = true
 clap.workspace = true
@@ -17,6 +21,8 @@ serde.workspace = true
 serde_json.workspace = true
 slint.workspace = true
 tokio.workspace = true
+futures-util = { version = "0.3", features = ["sink"] }
+tokio-tungstenite = "0.28"
 tray-icon.workspace = true
 
 [target.'cfg(windows)'.dependencies]

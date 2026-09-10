@@ -22,7 +22,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{BOOL, PCWSTR};
 
+pub mod codex;
 mod readout;
+pub mod target;
 pub use readout::prepare as prepare_readout;
 mod preview;
 pub use preview::set_no_activate;

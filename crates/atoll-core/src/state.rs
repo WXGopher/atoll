@@ -211,7 +211,7 @@ impl SessionState {
             // `PermissionRequest` is the event that means "Claude Code is about
             // to prompt a human". Its hook budget is a day, because that is how
             // long a human might take.
-            events::PERMISSION_REQUEST => {
+            events::PERMISSION_REQUEST | events::CODEX_USER_INPUT => {
                 self.push_pending(payload, now);
                 self.phase = if payload.tool_name.as_deref() == Some(ASK_USER_QUESTION) {
                     Phase::WaitingForAnswer

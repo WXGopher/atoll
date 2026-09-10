@@ -1,4 +1,7 @@
 import { Theme, ActionButton } from "common.slint";
+import { ScrollView, LineEdit, TextEdit } from "std-widgets.slint";
+
+export struct FormOption { label: string, description: string, selected: bool }
 
 // The card: the one window Atoll opens on its own initiative.
 //
@@ -19,6 +22,7 @@ export component CardWindow inherits Window {
     no-frame: true;
     always-on-top: true;
     background: transparent;
+    default-font-family: "Microsoft YaHei UI";
 
     // 0 none · 1 approval · 2 question
     in property <int> card: 0;
@@ -30,6 +34,18 @@ export component CardWindow inherits Window {
     // How many more cards are queued behind this one, so the user can tell that
     // dismissing this one is not the end of it.
     in property <int> card-queued: 0;
+    in property <string> form-question;
+    in property <string> form-progress;
+    in property <[FormOption]> form-options;
+    in property <bool> form-free-text;
+    in property <bool> form-secret;
+    in property <bool> form-can-back;
+    in property <bool> form-can-next;
+    in property <bool> form-last;
+    in-out property <string> form-text;
+    callback form-edit(string);
+    callback form-choose(int);
+    callback form-navigate(int);
 
     // true = allow, false = deny.
     callback decide(bool);
@@ -117,7 +133,7 @@ export component CardWindow inherits Window {
             }
 
             // --- body: the one line that says what is actually being asked
-            Text {
+            if root.card != 3: Text {
                 text: root.card-detail;
                 color: root.card == 2 ? Theme.text : Theme.body-text;
                 font-size: 13px;
@@ -166,6 +182,63 @@ export component CardWindow inherits Window {
                         root.answer(index);
                     }
                 }
+            }
+
+            if root.card == 3: VerticalLayout {
+                spacing: 8px;
+                Text { text: root.form-progress; color: Theme.faint; font-size: 12px; }
+                ScrollView {
+                    viewport-width: self.width;
+                    VerticalLayout {
+                        padding-right: 12px;
+                        spacing: 8px;
+                        Text { text: root.form-question; color: Theme.text; wrap: word-wrap; font-size: 13px; }
+                        for option[index] in root.form-options: Rectangle {
+                            min-height: option-content.preferred-height + 16px;
+                            border-width: 1px;
+                            border-radius: 6px;
+                            border-color: option.selected ? Theme.codex : Theme.hairline;
+                            background: option.selected ? Theme.codex.with-alpha(0.12) : transparent;
+                            option-content := VerticalLayout {
+                                padding: 8px;
+                                spacing: 4px;
+                                Text { text: option.label; color: Theme.text; wrap: word-wrap; font-size: 13px; }
+                                Text { text: option.description; color: Theme.faint; wrap: word-wrap; font-size: 12px; }
+                            }
+                            TouchArea { clicked => { root.form-choose(index); } }
+                        }
+                        if root.form-free-text: Text {
+                            text: root.form-options.length > 0 ? "Or write your own answer" : "Your answer";
+                            color: Theme.faint; font-size: 12px;
+                        }
+                        if root.form-free-text && !root.form-secret: TextEdit {
+                            height: 100px;
+                            text <=> root.form-text;
+                            edited => { root.form-edit(self.text); }
+                        }
+                        if root.form-free-text && root.form-secret: LineEdit {
+                            text <=> root.form-text;
+                            input-type: password;
+                            edited => { root.form-edit(self.text); }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    height: 30px;
+                    spacing: 8px;
+                    ActionButton {
+                        label: "Back";
+                        enabled: root.form-can-back;
+                        clicked => { root.form-navigate(-1); }
+                    }
+                    ActionButton {
+                        label: root.form-last ? "Submit" : "Next";
+                        enabled: root.form-can-next;
+                        primary: true;
+                        clicked => { root.form-navigate(1); }
+                    }
+                }
+                ActionButton { label: "Answer in Codex"; clicked => { root.form-navigate(0); } }
             }
         }
     }

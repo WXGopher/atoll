@@ -124,4 +124,50 @@ fn waiting_preview_renders_and_opens_full_details_at_common_scales() {
     click(&window, 260.0, 23.0);
     draw(&window, "settings-general");
     settings.hide().unwrap();
+
+    let card = super::ui::CardWindow::new().unwrap();
+    card.set_card(3);
+    card.set_card_source("codex".into());
+    card.set_card_title("atoll · Codex".into());
+    card.set_card_tool("Question".into());
+    card.set_form_progress("1 / 3 · 实现范围".into());
+    card.set_form_question(
+        "这次优先实现哪些能力？选项说明和自由文本都应完整显示，较长内容可以滚动查看。".into(),
+    );
+    card.set_form_free_text(true);
+    card.set_form_options(ModelRc::new(VecModel::from(vec![
+        super::ui::FormOption {
+            label: "Windows Terminal".into(),
+            description: "返回对应窗口、隐藏标签页和原来的分屏。".into(),
+            selected: true,
+        },
+        super::ui::FormOption {
+            label: "Codex desktop".into(),
+            description: "Open the exact local conversation in the desktop app.".into(),
+            selected: false,
+        },
+    ])));
+    card.set_form_text("暂时只支持 Codex\n保留当前终端的操作方式。".into());
+    card.set_form_can_next(true);
+    card.window().set_size(slint::LogicalSize::new(
+        super::cardview::CARD_WIDTH,
+        super::cardview::card_height(super::cardview::CardKind::Form),
+    ));
+    card.show().unwrap();
+    let window = windows.borrow().last().unwrap().clone();
+    for scale in [1.0, 1.5, 2.0] {
+        window.dispatch_event(WindowEvent::ScaleFactorChanged {
+            scale_factor: scale,
+        });
+        card.window().set_size(slint::LogicalSize::new(
+            super::cardview::CARD_WIDTH,
+            super::cardview::card_height(super::cardview::CardKind::Form),
+        ));
+        draw(&window, &format!("codex-question-{scale}"));
+    }
+    card.set_form_options(ModelRc::default());
+    card.set_form_secret(true);
+    card.set_form_text("hidden secret text".into());
+    draw(&window, "codex-secret-question");
+    card.hide().unwrap();
 }

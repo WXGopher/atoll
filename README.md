@@ -11,9 +11,9 @@
 
 ## 中文
 
-**在 Windows 任务栏查看 Claude Code 和 Codex 的剩余额度，悬停预览待办，点击查看会话详情，并直接处理工具审批。**
+**在 Windows 任务栏查看 Codex 的剩余额度与会话状态，处理工具审批和提问，返回对应桌面对话或终端分屏。**
 
-Atoll 通过 Claude Code / Codex hooks 和 Codex 本地会话日志跟踪活动。平时只在任务栏显示简洁的额度与状态，需要时展开详情或审批卡片。
+Atoll 以 Codex 为支持和验证对象，通过 hooks、本地会话日志及可选 app-server 接入跟踪活动。Claude Code 兼容代码保留为实验性，未在真实环境验证，新配置默认关闭其显示。平时只在任务栏显示简洁的额度与状态，需要时展开详情或审批卡片。
 
 <p align="center">
   <img src="docs/panel.png" width="400" alt="Atoll 详情面板：会话状态和额度窗口">
@@ -26,10 +26,11 @@ Atoll 通过 Claude Code / Codex hooks 和 Codex 本地会话日志跟踪活动�
 - **详情面板自动收起**：点击任务栏控件或托盘图标展开；点击桌面、其他窗口，或切换到其他窗口后自动收起。再次点击 Atoll 图标也能关闭。
 - **悬停预览待办**：停留在任务栏控件上可预览等待处理的会话，不抢键盘焦点；移开后自动收起，点击可展开完整详情。
 - **Codex 会话自动识别**：每两秒读取本地日志中的开始、完成和中断事件，支持从旧日志目录恢复的会话。启动时先建立日志基线，新的事件到来后更新显示；进入实时状态后，连续十五分钟没有活动的会话会从列表移除。
-- **Claude Code 审批卡片**：允许或拒绝工具调用，回答 `AskUserQuestion`。已被你的权限设置允许的工具调用不会弹出审批卡片。
-- **Codex 审批与终端信息**：可选安装 Codex hooks，在真实 `PermissionRequest` 上允许或拒绝工具调用，并记录终端来源用于跳转。Codex 的结构化提问回复和桌面端精确会话跳转仍在计划中。
+- **Claude Code 审批卡片（实验性）**：允许或拒绝工具调用，回答 `AskUserQuestion`。已被你的权限设置允许的工具调用不会弹出审批卡片。
+- **Codex 审批与终端信息**：可选安装 Codex hooks，在真实 `PermissionRequest` 上允许或拒绝工具调用，并记录终端来源用于跳转。无终端信息的本地会话使用官方链接打开对应 Codex 桌面对话。
 - **后台完成通知**：观察到任务持续至少三十秒并完成后，发送静音 Windows 通知，弹出三秒后自动收起。不会补发历史完成、中断或短任务；正在查看详情或对应终端时也不提醒。设置中可关闭，Atoll 运行期间点击通知可返回会话或详情。
-- **返回会话终端**：对有终端信息的会话，点击详情行可定位 Windows Terminal 或 VS Code 中对应的终端。无法定位终端的会话行不会显示可点击提示。
+- **原生提问卡片**：通过 Atoll 启动的 Codex CLI 会话支持多题切换、完整选项说明、多行自由文本、密码遮罩和返回修改草稿。卡片与终端先答者生效，重复回复会被丢弃。
+- **精确返回会话**：Atoll 启动时记录 Windows Terminal 标签页和分屏，即使藏在其他标签页后或正在滚动输出，也能返回原分屏；目标失效时回退窗口或 Codex 桌面对话。IDE 暂不纳入本轮支持。
 - **设置与托盘**：支持开机启动、按代理显示或隐藏任务栏内容、修改颜色阈值。右键任务栏控件或托盘图标进入设置或退出。
 - **任务栏集成**：跟随任务栏位置、自动隐藏和通知区域大小变化；嵌入失败时使用贴近任务栏的浮动显示。重复启动 Atoll 会替换旧实例。
 - **额度读取**：Claude Code 使用其已有凭据读取额度，并尽量复用本机缓存；Codex 从本地 rollout 日志读取额度。请求受限时会退避重试。
@@ -44,17 +45,28 @@ Atoll 通过 Claude Code / Codex hooks 和 Codex 本地会话日志跟踪活动�
 从 [GitHub Releases](https://github.com/WXGopher/atoll/releases) 下载最新 Windows x86_64 压缩包，解压后在该目录运行：
 
 ```powershell
-.\atoll.exe setup install claude
+.\atoll.exe setup install codex
 .\atoll.exe
 ```
 
-第一条命令会将 `atoll.exe` 和 `atoll-hook.exe` 复制到 `%LOCALAPPDATA%\Atoll\bin` 并安装 Claude Code hooks。Codex 无需 hooks 即可读取本地会话和额度；需要审批卡片和终端信息时，运行：
+第一条命令会将 `atoll.exe`、`atoll-hook.exe` 和 `atoll-codex.exe` 复制到 `%LOCALAPPDATA%\Atoll\bin` 并安装 Codex hooks。Codex 无需 hooks 即可读取本地会话和额度；安装后可检查 hooks：
 
 ```powershell
-.\atoll.exe setup install codex
+.\atoll.exe setup status codex
 ```
 
 随后在 Codex 中运行 `/hooks` 审阅并信任新增配置，再开启新会话。Atoll 不会代替你完成信任审核。安装命令及审批协议已在 Codex CLI 0.154.0 的环境中验证；配置格式见 [Codex hooks 文档](https://learn.chatgpt.com/docs/hooks)。
+
+在 Windows Terminal 中通过 Atoll 启动 Codex，即可启用提问卡片和精确分屏跳转：
+
+```powershell
+& "$env:LOCALAPPDATA\Atoll\bin\atoll-codex.exe"
+# 在指定目录启动，或恢复已有对话
+& "$env:LOCALAPPDATA\Atoll\bin\atoll-codex.exe" -C C:\github\atoll
+& "$env:LOCALAPPDATA\Atoll\bin\atoll-codex.exe" --resume <会话ID>
+```
+
+此入口使用上游实验性的 [Codex app-server](https://learn.chatgpt.com/docs/app-server) / WebSocket 接口。中转仅在本机监听，要求临时令牌；退出后清理后端及其子进程。Atoll 未运行时仍可在 Codex 终端作答。现有桌面会话、普通 `codex` 命令启动的会话仍在 Codex 中回答；当前原生问题协议支持单选和文本，暂无多选。桌面直达使用[官方会话链接](https://learn.chatgpt.com/docs/app/commands)，需安装并注册 Codex 桌面应用。
 
 - 左键点击任务栏控件或托盘图标：展开或收起详情。
 - 悬停任务栏控件：有待处理会话时预览待办，移开后收起。
@@ -125,7 +137,7 @@ cargo test -p atoll --test display_lifecycle -- --ignored --nocapture
 gh attestation verify atoll-v0.1.4-windows-x86_64.zip --repo WXGopher/atoll
 ```
 
-后续功能包括 Codex 桌面端精确跳转、结构化提问、更多代理与终端、多语言及更新体验，见对照 open-vibe-island 整理的 [功能路线图](docs/ROADMAP.md)。维护事项单列在 [已知问题](docs/KNOWN_ISSUES.md)。
+F01–F03 的交付范围与后续更新、远端会话候选项，见对照 open-vibe-island 整理的 [功能路线图](docs/ROADMAP.md)。更多代理、通知偏好和界面语言切换本轮不做。维护事项单列在 [已知问题](docs/KNOWN_ISSUES.md)。
 
 ### 致谢与许可证
 
@@ -137,9 +149,9 @@ Atoll 受到 macOS 项目 [open-vibe-island](https://github.com/Octane0411/open-
 
 ## English
 
-**See Claude Code and Codex quota in the Windows taskbar, hover to preview waiting sessions, and handle tool approvals without returning to the terminal.**
+**See Codex quota and sessions in the Windows taskbar, answer approvals and questions, and return to the exact desktop conversation or Terminal pane.**
 
-Atoll follows Claude Code / Codex hooks and Codex's local session logs. Quota and task counts stay in the taskbar; details and approval cards appear when needed.
+Atoll focuses on Codex, using hooks, local session logs and an optional app-server connection. Claude Code compatibility is experimental, unverified on a real installation, and hidden by default in new configurations. Quota and task counts stay in the taskbar; details and approval cards appear when needed.
 
 <p align="center">
   <img src="docs/panel.png" width="400" alt="Atoll's detail panel with session states and quota windows">
@@ -152,10 +164,11 @@ Atoll follows Claude Code / Codex hooks and Codex's local session logs. Quota an
 - **Details that dismiss automatically**: click the readout or tray icon to open the panel. Click the desktop, another window, or switch windows to dismiss it. Clicking the Atoll icon again also closes it.
 - **Hover preview**: dwell over the readout to see waiting sessions without taking keyboard focus. Move away to dismiss it or click to open full details.
 - **Automatic Codex session tracking**: local start, completion and interruption events are read every two seconds, including conversations resumed from older directories. Startup establishes a log baseline; new events resume live display updates. Once live, sessions leave the list after fifteen minutes without activity.
-- **Claude Code approval cards**: allow or deny tools and answer `AskUserQuestion`. Tools already allowed by your own permissions do not raise a card.
-- **Codex approvals and terminal metadata**: optional hooks handle actual `PermissionRequest` events and record terminal ancestry for navigation. Structured question replies and exact Codex desktop conversation navigation remain planned.
+- **Claude Code approval cards (experimental)**: allow or deny tools and answer `AskUserQuestion`. Tools already allowed by your own permissions do not raise a card.
+- **Codex approvals and terminal metadata**: optional hooks handle actual `PermissionRequest` events and record terminal ancestry for navigation. Local sessions without terminal metadata open their exact conversation through the official Codex desktop link.
 - **Background completion notifications**: silent Windows notifications follow tasks observed running for at least thirty seconds, and their popups dismiss after three seconds. Historical completions, interruptions, short tasks and sessions being watched in the panel or their terminal do not notify. Disable this in Settings; while Atoll is running, clicking a notification opens the session or details.
-- **Return to the session's terminal**: rows with terminal metadata can locate the corresponding Windows Terminal or VS Code terminal. Rows whose terminal is unknown show no click affordance.
+- **Exact session navigation**: sessions launched through Atoll remember their Windows Terminal tab and pane, including hidden tabs and changing output. Invalid targets fall back to the terminal window or Codex desktop conversation. IDE navigation is outside this release scope.
+- **Native question cards**: navigate multiple questions, read option descriptions, write multiline answers, mask secret input, and return to edit drafts before submitting. The first answer from Atoll or the Codex terminal wins.
 - **Settings and tray**: configure launch at login, agent visibility and colour thresholds. Right-click the readout or tray icon for Settings and Quit.
 - **Taskbar integration**: follows the taskbar's position, auto-hide and notification-area size; falls back to a floating readout beside the taskbar if embedding fails. Starting another Atoll replaces the existing instance.
 - **Quota readings**: Claude Code's existing credentials fetch quota with local cache reuse where possible; Codex quota comes from local rollout logs. Rate-limited requests back off before retrying.
@@ -170,17 +183,27 @@ These features describe the current source. The published v0.1.4 archive does no
 Download the latest Windows x86_64 archive from [GitHub Releases](https://github.com/WXGopher/atoll/releases), extract it, and run these commands from that directory:
 
 ```powershell
-.\atoll.exe setup install claude
+.\atoll.exe setup install codex
 .\atoll.exe
 ```
 
-The first command copies `atoll.exe` and `atoll-hook.exe` to `%LOCALAPPDATA%\Atoll\bin` and installs Claude Code hooks. Codex sessions and quota work without hooks. To also enable approval cards and terminal metadata, run:
+The first command copies `atoll.exe`, `atoll-hook.exe` and `atoll-codex.exe` to `%LOCALAPPDATA%\Atoll\bin` and installs Codex hooks. Codex sessions and quota work without hooks. Check the hook configuration after installation:
 
 ```powershell
-.\atoll.exe setup install codex
+.\atoll.exe setup status codex
 ```
 
 Then use `/hooks` in Codex to review and trust the new definitions, and start a new session. Atoll does not bypass this review. Installation commands and approval protocol were checked in an environment with Codex CLI 0.154.0; see the [Codex hooks documentation](https://learn.chatgpt.com/docs/hooks).
+
+Launch a CLI session from Windows Terminal to enable question replies and exact pane navigation:
+
+```powershell
+& "$env:LOCALAPPDATA\Atoll\bin\atoll-codex.exe"
+& "$env:LOCALAPPDATA\Atoll\bin\atoll-codex.exe" -C C:\github\atoll
+& "$env:LOCALAPPDATA\Atoll\bin\atoll-codex.exe" --resume <thread-id>
+```
+
+This entry point uses the experimental [Codex app-server](https://learn.chatgpt.com/docs/app-server) and WebSocket interface, with an authenticated loopback-only relay. Closing the launcher cleans up its backend processes. Existing desktop sessions and ordinary CLI launches still answer inside Codex. Native questions currently support single choice or text, without a multi-select field. Desktop navigation requires the installed Codex URI handler and uses its [official local-thread link](https://learn.chatgpt.com/docs/app/commands).
 
 - Left-click the taskbar readout or tray icon to toggle details.
 - Hover over the readout to preview waiting sessions; move away to dismiss.
@@ -251,7 +274,7 @@ Release archives are built by [GitHub Actions](.github/workflows/release.yml) an
 gh attestation verify atoll-v0.1.4-windows-x86_64.zip --repo WXGopher/atoll
 ```
 
-See the [feature roadmap](docs/ROADMAP.md) for gaps compared with open-vibe-island, including exact Codex desktop navigation, structured questions, more agents and terminals, languages and updates. Maintenance work is tracked separately in [known issues](docs/KNOWN_ISSUES.md).
+See the [feature roadmap](docs/ROADMAP.md) for gaps compared with open-vibe-island, including the delivered F01–F03 scope and candidate update/remote-session features; more agents, notification preferences and language switching are not planned. Maintenance work is tracked separately in [known issues](docs/KNOWN_ISSUES.md).
 
 ### Acknowledgements and license
 

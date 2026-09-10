@@ -68,7 +68,8 @@ export component SettingsWindow inherits Window {
                             alignment: center;
                             width: 180px;
                             Text {
-                                text: "Claude Code";
+                                text: "Claude Code (experimental)";
+                                wrap: word-wrap;
                                 font-weight: 600;
                             }
                             Text {
@@ -168,7 +169,7 @@ export component SettingsWindow inherits Window {
                         alignment: start;
                         spacing: 18px;
                         CheckBox {
-                            text: "Claude Code";
+                            text: "Claude Code (experimental)";
                             checked: root.show-claude;
                             enabled: root.taskbar-enabled;
                             toggled => {
