@@ -125,7 +125,7 @@ fn a_failed_embed_keeps_the_floating_readout_frameless_and_preserves_compositing
 #[test]
 #[ignore = "exercises the real Windows Slint/FemtoVG backend; run separately on a desktop"]
 fn native_slint_readout_stays_frameless_through_layout_and_visibility_changes() {
-    use crate::app::taskbar::{Along, Chip, TaskbarView};
+    use crate::app::taskbar::{Along, Chip, TaskbarView, bar_size};
     use crate::app::ui::{FlyoutWindow, TaskbarBar};
     use atoll_core::protocol::HookSource;
     use atoll_core::state::AgentTasks;
@@ -180,6 +180,20 @@ fn native_slint_readout_stays_frameless_through_layout_and_visibility_changes() 
         let flyout = flyout.clone_strong();
         move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let n = step.get();
+                let scale =
+                    unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd(taskbar.handle)) }
+                        as f32
+                        / 96.0;
+                if n.is_multiple_of(6) {
+                    // Model a missed DPI event while the window is embedded.
+                    // Neither the native parent's DPI nor the chips change.
+                    ui.window()
+                        .dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged {
+                            scale_factor: if scale == 1.0 { 2.0 } else { 1.0 },
+                        });
+                    ui.window().set_size(slint::PhysicalSize::new(45, 39));
+                }
                 assert!(
                     bar.attach(Some(taskbar)),
                     "attach at step {}, handle {:?}, native {:?}",
@@ -188,8 +202,8 @@ fn native_slint_readout_stays_frameless_through_layout_and_visibility_changes() 
                     ui.window()
                         .with_winit_window(|window| format!("{:?}", window.id()))
                 );
+                assert_eq!(ui.window().scale_factor(), scale);
                 assert_readout(hwnd(bar.window_handle().unwrap()), true);
-                let n = step.get();
                 ui.window()
                     .with_winit_window(|window| {
                         window.set_resizable(n.is_multiple_of(2));
@@ -223,14 +237,20 @@ fn native_slint_readout_stays_frameless_through_layout_and_visibility_changes() 
                         },
                     );
                 }
-                bar.set_chips(
-                    &chips,
-                    if n.is_multiple_of(2) {
-                        Along::Vertical
-                    } else {
-                        Along::Horizontal
-                    },
+                let along = if n.is_multiple_of(2) {
+                    Along::Vertical
+                } else {
+                    Along::Horizontal
+                };
+                bar.set_chips(&chips, along);
+                let blocks: Vec<_> = chips.iter().map(|chip| chip.tasks).collect();
+                let logical = bar_size(&blocks, along);
+                let expected = (
+                    (logical.0 * scale).round() as i32,
+                    (logical.1 * scale).round() as i32,
                 );
+                let rect = rect_of(hwnd(bar.window_handle().unwrap())).unwrap();
+                assert_eq!((rect.right - rect.left, rect.bottom - rect.top), expected);
                 if n.is_multiple_of(2) {
                     let handle = flyout
                         .window()

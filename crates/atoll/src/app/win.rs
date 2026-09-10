@@ -495,6 +495,12 @@ pub fn to_client(window: isize, x: i32, y: i32) -> (i32, i32) {
     }
 }
 
+/// Read the window's current DPI instead of a UI backend's cached scale.
+pub fn window_scale_factor(handle: isize) -> Option<f32> {
+    let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd(handle)) };
+    (dpi > 0).then_some(dpi as f32 / 96.0)
+}
+
 fn work_area_of(monitor: HMONITOR) -> Option<Rect> {
     let mut info = MONITORINFO {
         cbSize: std::mem::size_of::<MONITORINFO>() as u32,

@@ -359,6 +359,29 @@ impl TaskbarView {
         if scale > 0.0 { scale } else { 1.0 }
     }
 
+    /// Reparenting and monitor changes can leave Slint's scale or its native
+    /// window size stale. Repair both, even when the displayed chips are idle.
+    fn sync_scale(&self, scale: f32) {
+        let window = self.ui.window();
+        let scale_changed = window.scale_factor() != scale;
+        if scale_changed {
+            window.dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged {
+                scale_factor: scale,
+            });
+        }
+        let (width, height) = self.size.get();
+        let physical = slint::PhysicalSize::new(
+            (width * scale).round() as u32,
+            (height * scale).round() as u32,
+        );
+        if scale_changed || window.size() != physical {
+            // Winit can retain a different scale after SetParent. Passing a
+            // logical size would convert with that stale value once again.
+            window.set_size(physical);
+            self.request_redraw();
+        }
+    }
+
     /// The readout's on-screen size in physical pixels.
     pub fn physical_size(&self) -> (i32, i32) {
         // Use the actual window size once it exists. Backends differ in how
@@ -453,9 +476,7 @@ impl TaskbarView {
         let blocks: Vec<AgentTasks> = chips.iter().map(|chip| chip.tasks).collect();
         let size = bar_size(&blocks, along);
         self.size.set(size);
-        self.ui
-            .window()
-            .set_size(slint::LogicalSize::new(size.0, size.1));
+        self.sync_scale(self.scale());
         self.request_redraw();
     }
 
@@ -510,6 +531,11 @@ impl TaskbarView {
             self.request_redraw();
         }
 
+        // The taskbar is the DPI authority for both the embedded readout and
+        // its floating fallback. Check on every tick, not only when reparenting.
+        if let Some(scale) = win::window_scale_factor(taskbar.handle) {
+            self.sync_scale(scale);
+        }
         self.place(taskbar);
         self.embedded.get()
     }
