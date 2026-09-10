@@ -135,6 +135,95 @@ fn old_files_and_repeated_scans_do_not_manufacture_active_sessions() {
 }
 
 #[test]
+fn native_questions_wait_for_the_matching_answer_without_creating_approval_requests() {
+    let (dir, path) = fixture(json!("vscode"));
+    let response = |second: u64, payload: Value| {
+        json!({
+            "timestamp": format!("2026-09-05T00:00:{second:02}Z"),
+            "type": "response_item", "payload": payload
+        })
+    };
+    append(
+        &path,
+        &[
+            event(1, "task_started", "turn"),
+            response(
+                2,
+                json!({"type":"function_call", "name":"request_user_input", "call_id":"q1"}),
+            ),
+            response(3, json!({"type":"function_call_output", "call_id":"other"})),
+        ],
+    );
+    let mut cache = SessionCache::default();
+    let waiting = cache.scan(dir.path(), now(4)).unwrap();
+    assert_eq!(waiting[0].phase, Phase::WaitingForAnswer);
+    assert!(
+        waiting[0].pending.is_empty(),
+        "a log reading cannot answer a server request"
+    );
+    append(
+        &path,
+        &[response(
+            5,
+            json!({"type":"function_call_output", "call_id":"q1"}),
+        )],
+    );
+    assert_eq!(
+        cache.scan(dir.path(), now(6)).unwrap()[0].phase,
+        Phase::Running
+    );
+    append(
+        &path,
+        &[response(
+            7,
+            json!({"type":"function_call", "name":"request_user_input_async", "call_id":"async"}),
+        )],
+    );
+    assert_eq!(
+        cache.scan(dir.path(), now(8)).unwrap()[0].phase,
+        Phase::Running
+    );
+    append(
+        &path,
+        &[
+            response(
+                9,
+                json!({"type":"function_call", "name":"request_user_input", "call_id":"q2"}),
+            ),
+            event(10, "turn_aborted", "turn"),
+        ],
+    );
+    assert_eq!(
+        cache.scan(dir.path(), now(11)).unwrap()[0].phase,
+        Phase::Completed
+    );
+}
+
+#[test]
+fn writer_observations_extend_live_hooks_without_overwriting_or_pinning_them() {
+    let mut table = crate::state::SessionTable::new();
+    let payload =
+        serde_json::from_value(json!({"session_id":"owned","hook_event_name":"UserPromptSubmit"}))
+            .unwrap();
+    table.apply(&payload, HookSource::Codex, now(1));
+    let mut observed = SessionState::new("owned", HookSource::Codex, now(1));
+    observed.observed_alive = true;
+    table.sync_observed(HookSource::Codex, vec![observed.clone()], now(2));
+    assert!(table.get("owned").unwrap().observed_alive);
+    table.sweep(now(2) + STALE_AFTER_SECS);
+    assert!(table.get("owned").is_some());
+    table.sync_observed(HookSource::Codex, vec![], now(3) + STALE_AFTER_SECS);
+    table.sweep(now(3) + STALE_AFTER_SECS);
+    assert!(table.get("owned").is_none());
+    table.apply(&payload, HookSource::Codex, now(1));
+    table.sync_observed(HookSource::Codex, vec![observed], now(2));
+    let stop =
+        serde_json::from_value(json!({"session_id":"owned","hook_event_name":"Stop"})).unwrap();
+    table.apply(&stop, HookSource::Codex, now(3));
+    assert!(!table.get("owned").unwrap().observed_alive);
+}
+
+#[test]
 fn skips_subagents_and_removes_deleted_or_truncated_rollouts() {
     let (subdir, subpath) =
         fixture(json!({"subagent": {"thread_spawn": {"parent_thread_id": "parent"}}}));

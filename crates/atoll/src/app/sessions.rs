@@ -20,6 +20,7 @@ pub struct Update {
     pub last_seen: Option<u64>,
     pub new_activity: bool,
     pub usage: Option<CodexUsage>,
+    pub alive: bool,
 }
 
 struct Scan {
@@ -69,6 +70,7 @@ impl CodexWatcher {
                 update.usage = result.usage;
             }
             if let Ok(sessions) = result.sessions {
+                update.alive |= sessions.iter().any(|session| session.observed_alive);
                 if let Some(at) = sessions.iter().map(|session| session.last_seen).max() {
                     update.last_seen = Some(update.last_seen.unwrap_or(0).max(at));
                     if at > self.latest_event.get() && at <= now {

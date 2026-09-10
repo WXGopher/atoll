@@ -135,6 +135,10 @@ pub struct SessionState {
     pub last_seen: u64,
     /// When the session was first seen, in Unix seconds.
     pub first_seen: u64,
+    /// A current Codex writer lock proves a quiet turn is still attached.
+    pub observed_alive: bool,
+    /// The desktop's saved conversation name, when available.
+    pub display_name: Option<String>,
     /// Terminal metadata the hook injected, for "jump back to the session".
     pub terminal: Option<TerminalMeta>,
     /// Unresolved approvals, oldest first.
@@ -153,6 +157,8 @@ impl SessionState {
             last_event: String::new(),
             last_seen: now,
             first_seen: now,
+            observed_alive: false,
+            display_name: None,
             terminal: None,
             pending: Vec::new(),
         }
@@ -182,6 +188,7 @@ impl SessionState {
             self.terminal = Some(meta);
         }
         self.last_event = event.to_string();
+        self.observed_alive = false;
         self.last_seen = now;
 
         match event {
@@ -281,7 +288,7 @@ impl SessionState {
 
     /// Whether the agent has been silent long enough to presume it is gone.
     pub fn is_stale(&self, now: u64, stale_after_secs: u64) -> bool {
-        now.saturating_sub(self.last_seen) >= stale_after_secs
+        !self.observed_alive && now.saturating_sub(self.last_seen) >= stale_after_secs
     }
 
     /// Drop approvals older than `ttl_secs`, leaving the phase consistent.
@@ -446,6 +453,10 @@ impl SessionTable {
             let id = session.session_id.clone();
             seen.insert(id.clone());
             if self.sessions.contains_key(&id) && !self.observed.contains(&id) {
+                let state = self.sessions.get_mut(&id).expect("existing hook state");
+                let alive = session.observed_alive && state.phase != Phase::Completed;
+                changed |= state.observed_alive != alive;
+                state.observed_alive = alive;
                 continue;
             }
             if self.sessions.get(&id) != Some(&session) {
@@ -455,6 +466,10 @@ impl SessionTable {
             self.observed.insert(id);
         }
         self.sessions.retain(|id, state| {
+            if state.source == source && !seen.contains(id) && state.observed_alive {
+                state.observed_alive = false;
+                changed = true;
+            }
             let remove = state.source == source && self.observed.contains(id) && !seen.contains(id);
             changed |= remove;
             !remove

@@ -63,7 +63,11 @@ impl Tracker {
                 && old.is_some_and(|old| old.phase != Phase::Completed);
             let cancelled = matches!(
                 state.last_event.as_str(),
-                "Interrupt" | "turn_aborted" | "SessionEnd"
+                "Interrupt"
+                    | "turn_aborted"
+                    | "SessionEnd"
+                    | "turn_failed"
+                    | "session_disconnected"
             );
             if just_finished
                 && !cancelled
@@ -164,5 +168,18 @@ mod tests {
         tracker.observe(&table, 50, true, |_| false);
         event(&mut table, "Stop", 51);
         assert!(tracker.observe(&table, 51, true, |_| false).is_empty());
+    }
+
+    #[test]
+    fn desktop_failure_and_disconnect_do_not_send_success_notifications() {
+        for end in ["turn_failed", "session_disconnected"] {
+            let mut table = SessionTable::new();
+            let mut tracker = Tracker::default();
+            event(&mut table, "UserPromptSubmit", 1);
+            tracker.observe(&table, 1, true, |_| false);
+            event(&mut table, "Stop", 40);
+            table.get_mut("test").unwrap().last_event = end.into();
+            assert!(tracker.observe(&table, 40, true, |_| false).is_empty());
+        }
     }
 }

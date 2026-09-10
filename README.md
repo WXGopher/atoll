@@ -25,7 +25,7 @@ Atoll 以 Codex 为支持和验证对象，通过 hooks、本地会话日志及�
 - **按活动显示代理**：启动时恢复上次保存的代理显隐和会话文本；Codex 本地额度独立刷新，不改变代理显隐。收到 Claude hook 或新的 Codex 日志事件后更新，并隐藏连续十五分钟没有活动的代理；再次活动时自动显示。点击详情不会触发额度请求。
 - **详情面板自动收起**：点击任务栏控件或托盘图标展开；点击桌面、其他窗口，或切换到其他窗口后自动收起。再次点击 Atoll 图标也能关闭。
 - **悬停预览待办**：停留在任务栏控件上可预览等待处理的会话，不抢键盘焦点；移开后自动收起，点击可展开完整详情。
-- **Codex 会话自动识别**：每两秒读取本地日志中的开始、完成和中断事件，支持从旧日志目录恢复的会话。启动时先建立日志基线，新的事件到来后更新显示；进入实时状态后，连续十五分钟没有活动的会话会从列表移除。
+- **Codex 会话自动识别**：每两秒读取本地日志中的开始、完成和中断事件，支持从旧日志目录恢复的会话。启动时建立日志基线；检测到仍持有写入锁的运行会话时立即恢复跟踪。没有存活证据的会话在十五分钟无活动后移除。分页历史接入为实验性，补充识别无日志会话、失败、中断和归档；桌面原生提问仍需返回 Codex 作答。
 - **Claude Code 审批卡片（实验性）**：允许或拒绝工具调用，回答 `AskUserQuestion`。已被你的权限设置允许的工具调用不会弹出审批卡片。
 - **Codex 审批与终端信息**：可选安装 Codex hooks，在真实 `PermissionRequest` 上允许或拒绝工具调用，并记录终端来源用于跳转。无终端信息的本地会话使用官方链接打开对应 Codex 桌面对话。
 - **后台完成通知**：观察到任务持续至少三十秒并完成后，发送静音 Windows 通知，弹出三秒后自动收起。不会补发历史完成、中断或短任务；正在查看详情或对应终端时也不提醒。设置中可关闭，Atoll 运行期间点击通知可返回会话或详情。
@@ -163,7 +163,7 @@ Atoll focuses on Codex, using hooks, local session logs and an optional app-serv
 - **Activity-driven visibility**: startup restores saved agent visibility and session text; local Codex quota refreshes independently without changing visibility. A Claude hook or a new Codex log event updates the display and hides agents silent for fifteen minutes; activity brings them back. Opening details does not request quota.
 - **Details that dismiss automatically**: click the readout or tray icon to open the panel. Click the desktop, another window, or switch windows to dismiss it. Clicking the Atoll icon again also closes it.
 - **Hover preview**: dwell over the readout to see waiting sessions without taking keyboard focus. Move away to dismiss it or click to open full details.
-- **Automatic Codex session tracking**: local start, completion and interruption events are read every two seconds, including conversations resumed from older directories. Startup establishes a log baseline; new events resume live display updates. Once live, sessions leave the list after fifteen minutes without activity.
+- **Automatic Codex session tracking**: local start, completion and interruption events are read every two seconds, including conversations resumed from older directories. Startup establishes a log baseline and restores tracking immediately for running sessions with a live writer lock. Sessions without liveness evidence expire after fifteen minutes of inactivity. Experimental paginated-history support also detects sessions without rollout logs, failures, interruptions and archives. Desktop questions still require answering in Codex.
 - **Claude Code approval cards (experimental)**: allow or deny tools and answer `AskUserQuestion`. Tools already allowed by your own permissions do not raise a card.
 - **Codex approvals and terminal metadata**: optional hooks handle actual `PermissionRequest` events and record terminal ancestry for navigation. Local sessions without terminal metadata open their exact conversation through the official Codex desktop link.
 - **Background completion notifications**: silent Windows notifications follow tasks observed running for at least thirty seconds, and their popups dismiss after three seconds. Historical completions, interruptions, short tasks and sessions being watched in the panel or their terminal do not notify. Disable this in Settings; while Atoll is running, clicking a notification opens the session or details.

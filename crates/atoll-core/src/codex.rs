@@ -21,6 +21,9 @@ const READ_BUDGET: u64 = 4 * 1024 * 1024;
 const INITIAL_TAIL: u64 = 512 * 1024;
 const FILES_PER_SCAN: usize = 32;
 
+#[cfg(feature = "server")]
+mod desktop;
+
 #[derive(Default)]
 struct Events {
     session: Option<SessionState>,
@@ -28,6 +31,7 @@ struct Events {
     phase: Option<Phase>,
     last_seen: u64,
     excluded: bool,
+    questions: HashSet<String>,
 }
 
 impl Events {
@@ -38,6 +42,36 @@ impl Events {
         let payload = &record["payload"];
         let timestamp = record["timestamp"].as_str().and_then(parse_iso8601);
         match record["type"].as_str() {
+            Some("response_item") => {
+                let Some(at) = timestamp else { return true };
+                let call = payload["call_id"].as_str();
+                let name = payload["name"].as_str();
+                if payload["type"].as_str() == Some("function_call")
+                    && matches!(
+                        name,
+                        Some("request_user_input" | "functions.request_user_input")
+                    )
+                    && let Some(call) = call
+                {
+                    self.questions.insert(call.to_string());
+                    self.phase = Some(Phase::WaitingForAnswer);
+                    self.last_seen = self.last_seen.max(at);
+                    if let Some(session) = &mut self.session {
+                        session.last_event = "request_user_input".into();
+                    }
+                } else if payload["type"].as_str() == Some("function_call_output")
+                    && let Some(call) = call
+                    && self.questions.remove(call)
+                {
+                    if self.questions.is_empty() && self.phase == Some(Phase::WaitingForAnswer) {
+                        self.phase = Some(Phase::Running);
+                    }
+                    self.last_seen = self.last_seen.max(at);
+                    if let Some(session) = &mut self.session {
+                        session.last_event = "user_input_answered".into();
+                    }
+                }
+            }
             Some("session_meta") => {
                 self.excluded = payload["source"].get("subagent").is_some()
                     || payload["source"].as_str() == Some("subagent")
@@ -74,10 +108,14 @@ impl Events {
                 }
                 match kind {
                     "task_started" | "user_message" => {
+                        self.questions.clear();
                         self.turn = turn.map(str::to_string);
                         self.phase = Some(Phase::Running);
                     }
-                    "task_complete" | "turn_aborted" => self.phase = Some(Phase::Completed),
+                    "task_complete" | "turn_aborted" => {
+                        self.questions.clear();
+                        self.phase = Some(Phase::Completed);
+                    }
                     // Activity is useful when attaching to an older rollout or
                     // when a very long turn's start is outside the initial tail.
                     "agent_reasoning" | "agent_message" | "item_started" | "item_completed" => {
@@ -105,11 +143,8 @@ impl Events {
         true
     }
 
-    fn snapshot(&self, path: &Path, now: u64) -> Option<SessionState> {
-        if self.excluded
-            || self.last_seen == 0
-            || now.saturating_sub(self.last_seen) >= STALE_AFTER_SECS
-        {
+    fn snapshot(&self, path: &Path) -> Option<SessionState> {
+        if self.excluded || self.last_seen == 0 {
             return None;
         }
         let mut session = self.session.clone()?;
@@ -188,6 +223,8 @@ impl Cursor {
 #[derive(Default)]
 pub struct SessionCache {
     files: HashMap<PathBuf, Cursor>,
+    #[cfg(feature = "server")]
+    desktop: desktop::Cache,
 }
 
 impl SessionCache {
@@ -219,10 +256,20 @@ impl SessionCache {
             let _ = cached.read(&path, length, modified);
         }
         self.files.retain(|path, _| seen.contains(path));
-        Ok(self
+        let sessions: Vec<_> = self
             .files
             .iter()
-            .filter_map(|(path, cursor)| cursor.events.snapshot(path, now))
+            .filter_map(|(path, cursor)| cursor.events.snapshot(path))
+            .collect();
+        #[cfg(feature = "server")]
+        let sessions = {
+            let mut sessions = sessions;
+            self.desktop.merge(codex_home, now, &mut sessions);
+            sessions
+        };
+        Ok(sessions
+            .into_iter()
+            .filter(|session| !session.is_stale(now, STALE_AFTER_SECS))
             .collect())
     }
 }

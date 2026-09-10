@@ -171,7 +171,7 @@ impl DisplayState {
         }
     }
 
-    /// Called only by a hook or a newly observed Codex event. Expiry is checked
+    /// Called by a hook, a new Codex event, or a confirmed live writer. Expiry is checked
     /// here, never at startup, on a timer, or because a quota fetch succeeded.
     pub fn activate(&mut self, source: HookSource, at: u64, now: u64) {
         self.observe(source, at);

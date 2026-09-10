@@ -1100,11 +1100,12 @@ impl App {
                 let summary = rich
                     .then(|| titles.get(&state.session_id))
                     .flatten()
-                    .map(String::as_str);
+                    .map(String::as_str)
+                    .or(state.display_name.as_deref());
                 ui::SessionRow {
                     id: state.session_id.clone().into(),
                     title: session_title(project.as_deref(), summary, &state.session_id).into(),
-                    detail: describe_phase(state.phase, state.current_tool()).into(),
+                    detail: describe_session(state).into(),
                     phase: state.phase.as_str().into(),
                     source: state.source.as_str().into(),
                     jumpable: state
@@ -1194,8 +1195,17 @@ impl App {
                     .activate(HookSource::Codex, at, now);
             }
         }
+        if update.alive {
+            // An exclusive writer lock is current process evidence, unlike an
+            // old history row. It also recovers a running desktop turn at startup.
+            let now = now_unix_secs();
+            self.display
+                .borrow_mut()
+                .activate(HookSource::Codex, now, now);
+        }
         usage_changed
-            || (self.display.borrow().is_live() && (update.changed || update.new_activity))
+            || (self.display.borrow().is_live()
+                && (update.changed || update.new_activity || update.alive))
     }
 
     fn notify_completions(&self, now: u64) {
@@ -2086,6 +2096,18 @@ fn describe_phase(phase: Phase, tool: Option<&str>) -> String {
         },
         Phase::WaitingForAnswer => "Waiting for an answer".to_string(),
         Phase::Completed => "Done".to_string(),
+    }
+}
+
+fn describe_session(state: &atoll_core::state::SessionState) -> String {
+    match state.last_event.as_str() {
+        "turn_failed" => "Failed · Open in Codex".into(),
+        "turn_aborted" | "Interrupt" => "Interrupted".into(),
+        "session_disconnected" => "Disconnected · Open in Codex".into(),
+        _ if state.phase.is_waiting() && state.pending.is_empty() => {
+            "Waiting for an answer · Open in Codex".into()
+        }
+        _ => describe_phase(state.phase, state.current_tool()),
     }
 }
 
