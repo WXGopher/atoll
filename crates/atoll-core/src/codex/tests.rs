@@ -30,6 +30,33 @@ fn fixture(source: Value) -> (tempfile::TempDir, PathBuf) {
 }
 
 #[test]
+fn rollout_metadata_distinguishes_cli_desktop_and_unknown_clients() {
+    for (source, originator, expected) in [
+        ("cli", "codex-tui", CodexClient::Cli),
+        ("cli", "Codex Desktop", CodexClient::Cli),
+        ("vscode", "Codex Desktop", CodexClient::Desktop),
+        ("vscode", "codex_vscode", CodexClient::Unknown),
+        ("appServer", "atoll", CodexClient::Unknown),
+    ] {
+        let (dir, path) = fixture(json!(source));
+        append(
+            &path,
+            &[
+                json!({"timestamp":"2026-09-05T00:00:00Z", "type":"session_meta", "payload": {
+                "id":"s-1", "source":source, "originator":originator}}),
+                event(1, "task_started", "t-1"),
+            ],
+        );
+        let sessions = SessionCache::default().scan(dir.path(), now(2)).unwrap();
+        assert_eq!(sessions[0].codex_client, expected);
+        assert_eq!(
+            Path::new(sessions[0].transcript_path.as_deref().unwrap()),
+            path
+        );
+    }
+}
+
+#[test]
 fn recovers_an_already_running_session_and_follows_completion_and_the_next_turn() {
     let (dir, path) = fixture(json!("cli"));
     append(&path, &[event(1, "task_started", "t1")]);

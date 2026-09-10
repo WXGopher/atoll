@@ -14,7 +14,7 @@ use std::time::SystemTime;
 use serde_json::Value;
 
 use crate::protocol::HookSource;
-use crate::state::{Phase, STALE_AFTER_SECS, SessionState};
+use crate::state::{CodexClient, Phase, STALE_AFTER_SECS, SessionState};
 use crate::usage::parse_iso8601;
 
 const READ_BUDGET: u64 = 4 * 1024 * 1024;
@@ -84,6 +84,10 @@ impl Events {
                     let mut session =
                         SessionState::new(id, HookSource::Codex, timestamp.unwrap_or(0));
                     session.cwd = payload["cwd"].as_str().map(str::to_string);
+                    session.codex_client = CodexClient::from_metadata(
+                        payload["source"].as_str(),
+                        payload["originator"].as_str(),
+                    );
                     self.session = Some(session);
                 }
             }

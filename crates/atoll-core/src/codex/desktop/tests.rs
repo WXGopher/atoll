@@ -4,6 +4,38 @@ use crate::codex::SessionCache;
 const ID: &str = "01a08965-575f-7870-b001-3698447df18c";
 const NOW: u64 = 1_789_025_000;
 
+#[test]
+fn history_merge_keeps_the_cli_rollout_needed_to_find_its_terminal() {
+    let fixture = Fixture::new();
+    fixture
+        .state
+        .execute("UPDATE threads SET source = 'cli'", [])
+        .unwrap();
+    for last_seen in [NOW - 11, NOW] {
+        let mut rollout = SessionState::new(ID, HookSource::Codex, NOW - 20);
+        rollout.last_seen = last_seen;
+        rollout.codex_client = CodexClient::Cli;
+        rollout.transcript_path = Some("C:/synthetic/rollout-cli.jsonl".into());
+        let mut sessions = vec![rollout];
+        Cache::default().merge(fixture.dir.path(), NOW, &mut sessions);
+        assert_eq!(sessions[0].codex_client, CodexClient::Cli);
+        assert_eq!(
+            sessions[0].transcript_path.as_deref(),
+            Some("C:/synthetic/rollout-cli.jsonl")
+        );
+    }
+}
+
+#[test]
+fn history_without_client_details_preserves_explicit_desktop_metadata() {
+    let fixture = Fixture::new();
+    let mut rollout = SessionState::new(ID, HookSource::Codex, NOW - 20);
+    rollout.codex_client = CodexClient::Desktop;
+    let mut sessions = vec![rollout];
+    Cache::default().merge(fixture.dir.path(), NOW, &mut sessions);
+    assert_eq!(sessions[0].codex_client, CodexClient::Desktop);
+}
+
 struct Fixture {
     dir: tempfile::TempDir,
     state: Connection,

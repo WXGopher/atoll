@@ -10,7 +10,7 @@ use std::time::Duration;
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 
 use crate::protocol::HookSource;
-use crate::state::{Phase, STALE_AFTER_SECS, SessionState};
+use crate::state::{CodexClient, Phase, STALE_AFTER_SECS, SessionState};
 
 #[derive(Clone)]
 struct Snapshot {
@@ -67,6 +67,12 @@ fn merge_snapshot(snapshot: Snapshot, sessions: &mut Vec<SessionState>) {
             .position(|old| old.session_id == incoming.session_id)
         {
             let old = &sessions[index];
+            // History supplies lifecycle state; it must not discard the
+            // rollout path used to locate a CLI's live writer and terminal.
+            incoming.transcript_path = old.transcript_path.clone();
+            if incoming.codex_client == CodexClient::Unknown {
+                incoming.codex_client = old.codex_client;
+            }
             // The rollout and history projections can be a write apart.
             if old.last_seen > incoming.last_seen && incoming.last_event != "session_disconnected" {
                 sessions[index].observed_alive = incoming.observed_alive;
@@ -90,7 +96,7 @@ fn read(home: &Path, now: u64) -> rusqlite::Result<Snapshot> {
     let state = read_only(&home.join("state_5.sqlite"))?;
     let history = read_only(&home.join("thread_history_1.sqlite"))?;
     let mut threads = state.prepare(
-        "SELECT id, cwd, COALESCE(NULLIF(name, ''), title), archived
+        "SELECT id, cwd, COALESCE(NULLIF(name, ''), title), archived, source
          FROM threads
          WHERE history_mode = 'paginated' AND source IN ('cli', 'vscode', 'appServer')
          ORDER BY updated_at DESC LIMIT 256",
@@ -151,6 +157,7 @@ fn read(home: &Path, now: u64) -> rusqlite::Result<Snapshot> {
             continue;
         }
         let mut session = SessionState::new(&id, HookSource::Codex, started);
+        session.codex_client = CodexClient::from_metadata(Some(&row.get::<_, String>(4)?), None);
         session.last_seen = at;
         session.phase = phase;
         session.last_event = event.into();

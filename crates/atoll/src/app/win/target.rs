@@ -61,7 +61,7 @@ impl Drop for Apartment {
     }
 }
 
-fn stamp(pid: u32) -> Option<u64> {
+pub(super) fn stamp(pid: u32) -> Option<u64> {
     unsafe {
         let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let mut created = FILETIME::default();

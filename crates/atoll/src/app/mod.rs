@@ -33,6 +33,7 @@ mod display;
 mod flyout;
 mod form;
 mod icon;
+mod navigation;
 pub mod net;
 mod notifications;
 #[cfg(test)]
@@ -170,6 +171,7 @@ struct App {
     tray: RefCell<Option<Tray>>,
 
     table: RefCell<SessionTable>,
+    jump_request: Cell<u64>,
     codex_sessions: sessions::CodexWatcher,
     completions: RefCell<notifications::Tracker>,
     notifier: notifications::Notifier,
@@ -237,6 +239,7 @@ impl App {
             settings_window: RefCell::new(None),
             tray: RefCell::new(None),
             table: RefCell::new(SessionTable::new()),
+            jump_request: Cell::new(0),
             codex_sessions: sessions::CodexWatcher::new(),
             completions: RefCell::new(notifications::Tracker::default()),
             notifier: notifications::Notifier::new(),
@@ -720,64 +723,26 @@ impl App {
         });
     }
 
-    /// Jump back to the terminal that owns a session.
-    ///
-    /// The hook captured its process ancestry while the chain was alive;
-    /// what remains of it now — typically the CLI, the shell, and the
-    /// terminal host — is matched against the live process table and the
-    /// nearest survivor with a window is raised. Closing the flyout only on
-    /// success keeps the panel around to try another row when a terminal has
-    /// quietly gone away.
+    /// Resolve the actual client on a worker, then apply only the latest click.
     fn jump(self: &Rc<Self>, session_id: &str) {
-        let target = self
-            .table
-            .borrow()
-            .get(session_id)
-            .and_then(|state| state.terminal.as_ref())
-            .and_then(win::target::from_meta);
-        if target.as_ref().is_some_and(|target| {
-            win::target::activate(target) || win::target::activate_window(target)
-        }) {
-            self.close_flyout();
+        let request = self.jump_request.get().wrapping_add(1);
+        self.jump_request.set(request);
+        let Some(state) = self.table.borrow().get(session_id).cloned() else {
             return;
-        }
-        let ancestors = self
-            .table
-            .borrow()
-            .get(session_id)
-            .and_then(|state| state.terminal.as_ref())
-            .map(|terminal| terminal.ancestors.clone())
-            .unwrap_or_default();
-        let chain: Vec<String> = ancestors
-            .iter()
-            .map(|entry| format!("{}:{}", entry.pid, entry.exe))
-            .collect();
-        crate::util::debug_log(&format!("jump {session_id}: chain {}", chain.join(" <- ")));
-        // The transcript summary doubles as the tab hint: Claude Code titles
-        // its terminal tab after the same task, which is what lets the jump
-        // land on the session's own tab rather than whichever was in front.
+        };
         let hint = self.titles.borrow().get(session_id).cloned();
-        let source = self
-            .table
-            .borrow()
-            .get(session_id)
-            .map(|state| state.source)
-            .or_else(|| {
-                self.display
-                    .borrow()
-                    .saved_sessions(usize::MAX)
-                    .iter()
-                    .find(|row| row.id == session_id)
-                    .and_then(|row| HookSource::parse(row.source.as_str()))
+        std::thread::spawn(move || {
+            let plan = navigation::Plan::resolve(&state);
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(app) = APP.with(|slot| slot.borrow().clone())
+                    && app.jump_request.get() == request
+                    && app.table.borrow().get(&state.session_id).is_some()
+                    && plan.activate(&state.session_id, hint.as_deref())
+                {
+                    app.close_flyout();
+                }
             });
-        let desktop = source == Some(HookSource::Codex)
-            && ancestors.iter().any(|process| process.exe == "chatgpt.exe");
-        if (desktop && win::codex::open_thread(session_id))
-            || (target.is_none() && win::activate_terminal_from(&ancestors, hint.as_deref()))
-            || (source == Some(HookSource::Codex) && win::codex::open_thread(session_id))
-        {
-            self.close_flyout();
-        }
+        });
     }
 
     /// One line per panel opening: which sessions could jump right now.
@@ -1073,13 +1038,14 @@ impl App {
         let display = self.display.borrow();
         if !display.is_live() {
             let available = win::codex::available();
+            let table = self.table.borrow();
             return display
                 .saved_sessions(limit)
                 .into_iter()
                 .map(|mut row| {
-                    row.jumpable = available
-                        && row.source == "codex"
-                        && win::codex::thread_uri(row.id.as_str()).is_some();
+                    row.jumpable = table
+                        .get(row.id.as_str())
+                        .is_some_and(|state| navigation::can_jump(state, available));
                     row
                 })
                 .collect();
@@ -1108,13 +1074,7 @@ impl App {
                     detail: describe_session(state).into(),
                     phase: state.phase.as_str().into(),
                     source: state.source.as_str().into(),
-                    jumpable: state
-                        .terminal
-                        .as_ref()
-                        .is_some_and(|terminal| !terminal.ancestors.is_empty())
-                        || (state.source == HookSource::Codex
-                            && codex_desktop
-                            && win::codex::thread_uri(&state.session_id).is_some()),
+                    jumpable: navigation::can_jump(state, codex_desktop),
                 }
             })
             .collect()

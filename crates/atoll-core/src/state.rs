@@ -117,6 +117,28 @@ impl PendingApproval {
     }
 }
 
+/// The Codex client identified by session metadata, not merely the agent name.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CodexClient {
+    #[default]
+    Unknown,
+    Cli,
+    Desktop,
+}
+
+impl CodexClient {
+    pub fn from_metadata(source: Option<&str>, originator: Option<&str>) -> Self {
+        if source == Some("cli") || originator == Some("codex-tui") {
+            Self::Cli
+        } else if originator == Some("Codex Desktop") {
+            Self::Desktop
+        } else {
+            // `vscode` and `appServer` alone do not identify the desktop app.
+            Self::Unknown
+        }
+    }
+}
+
 /// One agent session, as reconstructed from its hook events.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionState {
@@ -124,6 +146,7 @@ pub struct SessionState {
     pub session_id: String,
     /// Which agent this session belongs to.
     pub source: HookSource,
+    pub codex_client: CodexClient,
     pub phase: Phase,
     /// The session's working directory, from whichever payload last carried one.
     pub cwd: Option<String>,
@@ -151,6 +174,7 @@ impl SessionState {
         Self {
             session_id: session_id.into(),
             source,
+            codex_client: CodexClient::Unknown,
             phase: Phase::Running,
             cwd: None,
             transcript_path: None,
@@ -457,6 +481,16 @@ impl SessionTable {
                 let alive = session.observed_alive && state.phase != Phase::Completed;
                 changed |= state.observed_alive != alive;
                 state.observed_alive = alive;
+                if session.codex_client != CodexClient::Unknown
+                    && state.codex_client != session.codex_client
+                {
+                    state.codex_client = session.codex_client;
+                    changed = true;
+                }
+                if state.transcript_path.is_none() && session.transcript_path.is_some() {
+                    state.transcript_path = session.transcript_path;
+                    changed = true;
+                }
                 continue;
             }
             if self.sessions.get(&id) != Some(&session) {
@@ -589,14 +623,16 @@ mod tests {
         }))
         .unwrap();
         table.apply(&approval, HookSource::Codex, 100);
-        table.sync_observed(
-            HookSource::Codex,
-            vec![SessionState::new("codex-session", HookSource::Codex, 101)],
-            101,
-        );
+        let mut observed = SessionState::new("codex-session", HookSource::Codex, 101);
+        observed.codex_client = CodexClient::Cli;
+        observed.transcript_path = Some("C:/synthetic/rollout-cli.jsonl".into());
+        table.sync_observed(HookSource::Codex, vec![observed.clone()], 101);
         let state = table.get("codex-session").unwrap();
         assert_eq!(state.phase, Phase::WaitingForApproval);
         assert!(state.terminal.is_some());
+        assert_eq!(state.codex_client, CodexClient::Cli);
+        assert_eq!(state.transcript_path, observed.transcript_path);
+        assert!(!table.sync_observed(HookSource::Codex, vec![observed], 101));
         let interrupt: HookPayload = serde_json::from_value(
             serde_json::json!({"session_id":"codex-session", "hook_event_name":"Interrupt"}),
         )

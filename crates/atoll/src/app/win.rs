@@ -23,6 +23,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{BOOL, PCWSTR};
 
 pub mod codex;
+pub mod file_owner;
 mod readout;
 pub mod target;
 pub use readout::prepare as prepare_readout;
@@ -916,6 +917,18 @@ pub(crate) fn live_candidates(
 /// Every live process's executable name, lowercased, from one Toolhelp
 /// snapshot — a consistent point-in-time view of the process tree.
 fn process_exes() -> HashMap<u32, String> {
+    process_tree()
+        .into_iter()
+        .map(|(pid, process)| (pid, process.exe))
+        .collect()
+}
+
+struct Process {
+    parent: u32,
+    exe: String,
+}
+
+fn process_tree() -> HashMap<u32, Process> {
     let mut table = HashMap::new();
     let Ok(snapshot) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) else {
         return table;
@@ -933,7 +946,10 @@ fn process_exes() -> HashMap<u32, String> {
                 .unwrap_or(entry.szExeFile.len());
             table.insert(
                 entry.th32ProcessID,
-                String::from_utf16_lossy(&entry.szExeFile[..len]).to_lowercase(),
+                Process {
+                    parent: entry.th32ParentProcessID,
+                    exe: String::from_utf16_lossy(&entry.szExeFile[..len]).to_lowercase(),
+                },
             );
             if unsafe { Process32NextW(snapshot, &mut entry) }.is_err() {
                 break;
