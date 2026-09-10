@@ -2,8 +2,8 @@
 //! readout in Atoll is built from.
 //!
 //! Claude Code's numbers reach Atoll through the status line bridge's cache and
-//! Codex's through its newest rollout file. Both are files another process
-//! writes, so this is a poll rather than a subscription: cheap at this interval,
+//! Codex's through the latest quota event across its rollout files. These files
+//! are written by another process, so this is a poll rather than a subscription:
 //! and free when nothing is happening.
 //!
 //! Everything that turns a reading into a number is a pure function of the
@@ -72,7 +72,12 @@ impl UsageSnapshot {
     pub fn read(now: u64) -> Self {
         Self {
             claude: ClaudeLimits::default(),
-            codex: home_dir().and_then(|home| usage::scan_codex_usage(&home).ok().flatten()),
+            codex: std::env::var_os("CODEX_HOME")
+                .filter(|path| !path.is_empty())
+                .map(|path| usage::scan_codex_usage_at(std::path::Path::new(&path)))
+                .or_else(|| home_dir().map(|home| usage::scan_codex_usage(&home)))
+                .and_then(Result::ok)
+                .flatten(),
             refreshed_at: Some(now),
         }
     }

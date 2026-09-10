@@ -12,10 +12,9 @@
 //!
 //! # Codex
 //!
-//! Codex writes its rate limits into every session's rollout log. The newest
-//! `rollout-*.jsonl` under `<home>/.codex/sessions` holds the freshest numbers,
-//! in the last record with `type == "event_msg"` and `payload.type ==
-//! "token_count"`.
+//! Codex writes its rate limits into session rollout logs. Compare the times
+//! of their last `token_count` readings, not file modification times: Windows
+//! can leave those unchanged while Codex still holds the writer open.
 //!
 //! ## Field names, verified against real rollout files
 //!
@@ -35,8 +34,9 @@
 //!   disk here, so both are parsed.
 
 use std::fs;
-use std::io;
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -61,12 +61,8 @@ pub fn parse_foreign_json(text: &str) -> Option<Value> {
 /// Prefix of every Codex rollout log.
 const ROLLOUT_PREFIX: &str = "rollout-";
 
-/// How many rollout files a Codex scan will open before giving up.
-///
-/// The freshest numbers are in the newest file, but a session that ended before
-/// its first `token_count` leaves a newer file with nothing in it. Falling
-/// through a few keeps a just-closed session from blanking the display.
-pub const CODEX_MAX_FILES: usize = 5;
+/// Read backwards in chunks so long sessions normally cost only one tail read.
+const CODEX_TAIL_CHUNK: usize = 64 * 1024;
 
 /// Keys in the status line cache. `rateLimits` and `cachedAt` are the original
 /// pair; the rest were added later and are absent from caches written by an
@@ -639,51 +635,109 @@ pub fn codex_sessions_dir(home: &Path) -> PathBuf {
 /// `Ok(None)` when Codex has never run here, or when none of the files examined
 /// carried a `token_count`. Never an error for an unreadable individual file.
 pub fn scan_codex_usage(home: &Path) -> io::Result<Option<CodexUsage>> {
+    scan_codex_usage_at(&home.join(".codex"))
+}
+
+/// The same scan with an explicit Codex data directory (including CODEX_HOME).
+pub fn scan_codex_usage_at(codex_home: &Path) -> io::Result<Option<CodexUsage>> {
     let mut rollouts = Vec::new();
-    collect_rollouts(&codex_sessions_dir(home), &mut rollouts)?;
+    collect_rollouts(&codex_home.join("sessions"), &mut rollouts)?;
     rollouts.sort_by_key(|(_, modified)| std::cmp::Reverse(*modified));
 
-    for (path, _) in rollouts.into_iter().take(CODEX_MAX_FILES) {
-        if let Some(mut usage) = read_codex_rollout(&path)? {
+    let mut latest = None;
+    let mut latest_key = None;
+    // An old session can be resumed after any number of newer ones. Capping
+    // this list by mtime would exclude exactly the reading we need.
+    for (path, modified) in rollouts {
+        let Ok(Some((mut usage, recorded_at))) = read_codex_reading(&path) else {
+            continue;
+        };
+        let key = (recorded_at.unwrap_or(modified), modified, path.clone());
+        if latest_key.as_ref().is_none_or(|previous| key > *previous) {
+            latest_key = Some(key);
             usage.source = Some(path);
-            return Ok(Some(usage));
+            latest = Some(usage);
+        }
+    }
+    Ok(latest)
+}
+
+/// The last `token_count` event in one rollout file, or `None` if it has none.
+pub fn read_codex_rollout(path: &Path) -> io::Result<Option<CodexUsage>> {
+    Ok(read_codex_reading(path)?.map(|(usage, _)| usage))
+}
+
+fn read_codex_reading(path: &Path) -> io::Result<Option<(CodexUsage, Option<SystemTime>)>> {
+    let mut file = fs::File::open(path)?;
+    let mut position = file.metadata()?.len();
+    let mut chunk = [0; CODEX_TAIL_CHUNK];
+    // A line spanning chunks is accumulated in reverse byte order, then
+    // reversed once. Even very long messages remain linear to read.
+    let mut carry = Vec::new();
+    while position > 0 {
+        let count = position.min(CODEX_TAIL_CHUNK as u64) as usize;
+        position -= count as u64;
+        file.seek(SeekFrom::Start(position))?;
+        file.read_exact(&mut chunk[..count])?;
+        let mut lines = chunk[..count].rsplit(|byte| *byte == b'\n').peekable();
+        while let Some(line) = lines.next() {
+            if lines.peek().is_none() && position > 0 {
+                carry.extend(line.iter().rev());
+                break;
+            }
+            let reading = if carry.is_empty() {
+                parse_codex_reading(line)
+            } else {
+                carry.extend(line.iter().rev());
+                carry.reverse();
+                let reading = parse_codex_reading(&carry);
+                carry.clear();
+                reading
+            };
+            if reading.is_some() {
+                return Ok(reading);
+            }
         }
     }
     Ok(None)
 }
 
-/// The last `token_count` event in one rollout file, or `None` if it has none.
-pub fn read_codex_rollout(path: &Path) -> io::Result<Option<CodexUsage>> {
-    let mut latest = None;
-    crate::transcript::for_each_line(path, |line| {
-        // Cheap reject before parsing: the vast majority of rollout lines are
-        // message records that cannot possibly match.
-        if !line.contains("token_count") {
-            return;
-        }
-        let Ok(record) = serde_json::from_str::<Value>(line) else {
-            return;
-        };
-        if record.get("type").and_then(Value::as_str) != Some("event_msg") {
-            return;
-        }
-        let Some(payload) = record.get("payload") else {
-            return;
-        };
-        if payload.get("type").and_then(Value::as_str) != Some("token_count") {
-            return;
-        }
-        // `rate_limits` is a sibling of `payload.info`, and `info` is sometimes
-        // null while the limits are present. See this module's header.
-        let Some(rate_limits) = payload.get("rate_limits") else {
-            return;
-        };
-        let usage = parse_codex_rate_limits(rate_limits);
-        if !usage.is_empty() {
-            latest = Some(usage);
-        }
-    })?;
-    Ok(latest)
+fn parse_codex_reading(line: &[u8]) -> Option<(CodexUsage, Option<SystemTime>)> {
+    if !line
+        .windows(b"token_count".len())
+        .any(|part| part == b"token_count")
+    {
+        return None;
+    }
+    let record: Value = serde_json::from_slice(line).ok()?;
+    let payload = record.get("payload")?;
+    if record.get("type")?.as_str()? != "event_msg"
+        || payload.get("type")?.as_str()? != "token_count"
+    {
+        return None;
+    }
+    let usage = parse_codex_rate_limits(payload.get("rate_limits")?);
+    if usage.is_empty() {
+        return None;
+    }
+    let at = record
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(|text| {
+            let seconds = parse_iso8601(text)?;
+            let fraction = text
+                .split_once('.')
+                .map(|(_, fraction)| fraction)
+                .unwrap_or("");
+            let mut nanos = 0;
+            let mut place = 100_000_000;
+            for digit in fraction.bytes().take(9).take_while(u8::is_ascii_digit) {
+                nanos += u32::from(digit - b'0') * place;
+                place /= 10;
+            }
+            SystemTime::UNIX_EPOCH.checked_add(Duration::new(seconds, nanos))
+        });
+    Some((usage, at))
 }
 
 /// Parse Codex's `rate_limits` object.
@@ -1421,6 +1475,94 @@ mod tests {
 
         let usage = scan_codex_usage(home.path()).unwrap().unwrap();
         assert_eq!(usage.primary.unwrap().used_percent, 31.0);
+    }
+
+    #[test]
+    fn a_resumed_old_rollout_beats_more_than_five_newer_files() {
+        let home = tempfile::tempdir().unwrap();
+        let mut fresh = token_count(json!({"used_percent": 25}), json!(null), "pro");
+        fresh["timestamp"] = json!("2026-09-10T07:25:12.617Z");
+        let resumed = write_rollout(home.path(), "2026/08/23", "rollout-resumed.jsonl", &[fresh]);
+        set_mtime(&resumed, SystemTime::UNIX_EPOCH + Duration::from_secs(NOW));
+        for index in 0..8 {
+            let mut stale = token_count(json!({"used_percent": 21}), json!(null), "pro");
+            stale["timestamp"] = json!("2026-09-10T04:06:36.271Z");
+            write_rollout(
+                home.path(),
+                "2026/09/10",
+                &format!("rollout-new-{index}.jsonl"),
+                &[stale],
+            );
+        }
+        let usage = scan_codex_usage(home.path()).unwrap().unwrap();
+        assert_eq!(usage.primary.unwrap().used_percent, 25.0);
+        assert_eq!(usage.source, Some(resumed));
+    }
+
+    #[test]
+    fn timestamps_include_subseconds_and_allow_quota_to_reset() {
+        let home = tempfile::tempdir().unwrap();
+        let mut reset = token_count(json!({"used_percent": 0}), json!(null), "pro");
+        reset["timestamp"] = json!("2026-09-10T07:25:12.900Z");
+        let earlier_file =
+            write_rollout(home.path(), "2026/09/10", "rollout-reset.jsonl", &[reset]);
+        set_mtime(
+            &earlier_file,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(NOW),
+        );
+        let mut stale = token_count(json!({"used_percent": 99}), json!(null), "pro");
+        stale["timestamp"] = json!("2026-09-10T15:25:12.100+08:00");
+        write_rollout(home.path(), "2026/09/10", "rollout-stale.jsonl", &[stale]);
+        let usage = scan_codex_usage_at(&home.path().join(".codex"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(usage.primary.unwrap().used_percent, 0.0);
+    }
+
+    #[test]
+    fn tail_read_handles_long_lines_chunk_boundaries_and_an_incomplete_final_record() {
+        let home = tempfile::tempdir().unwrap();
+        let mut reading = token_count(json!({"used_percent": 25}), json!(null), "pro");
+        reading["payload"]["padding"] = json!("中".repeat(CODEX_TAIL_CHUNK));
+        let path = write_rollout(
+            home.path(),
+            "2026/09/10",
+            "rollout-chunks.jsonl",
+            &[
+                reading,
+                json!({"type": "response_item", "payload": "文".repeat(CODEX_TAIL_CHUNK)}),
+                token_count(json!(null), json!(null), "pro"),
+            ],
+        );
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(b"{\"payload\":{\"type\":\"token_count\"")
+            .unwrap();
+        assert_eq!(
+            read_codex_rollout(&path)
+                .unwrap()
+                .unwrap()
+                .primary
+                .unwrap()
+                .used_percent,
+            25.0
+        );
+    }
+
+    #[test]
+    fn a_legacy_reading_without_a_timestamp_uses_the_file_time() {
+        let home = tempfile::tempdir().unwrap();
+        let mut record = token_count(json!({"used_percent": 25}), json!(null), "pro");
+        record.as_object_mut().unwrap().remove("timestamp");
+        write_rollout(home.path(), "2026/09/10", "rollout-legacy.jsonl", &[record]);
+        assert_eq!(
+            scan_codex_usage(home.path())
+                .unwrap()
+                .unwrap()
+                .primary
+                .unwrap()
+                .used_percent,
+            25.0
+        );
     }
 
     #[test]

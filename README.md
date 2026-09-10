@@ -22,7 +22,7 @@ Atoll 以 Codex 为支持和验证对象，通过 hooks、本地会话日志及�
 ### 功能
 
 - **任务栏额度与状态**：显示每个代理最紧张的额度窗口，以及等待处理、运行中、已完成的会话数量。颜色阈值可在设置中调整；仅等待或运行状态需要动画。
-- **按活动显示代理**：启动时恢复上次保存的代理显隐、额度和会话文本，不主动刷新额度。收到 Claude hook 或新的 Codex 日志事件后更新，并隐藏连续十五分钟没有活动的代理；再次活动时自动显示。点击详情不会触发额度请求。
+- **按活动显示代理**：启动时恢复上次保存的代理显隐和会话文本；Codex 本地额度独立刷新，不改变代理显隐。收到 Claude hook 或新的 Codex 日志事件后更新，并隐藏连续十五分钟没有活动的代理；再次活动时自动显示。点击详情不会触发额度请求。
 - **详情面板自动收起**：点击任务栏控件或托盘图标展开；点击桌面、其他窗口，或切换到其他窗口后自动收起。再次点击 Atoll 图标也能关闭。
 - **悬停预览待办**：停留在任务栏控件上可预览等待处理的会话，不抢键盘焦点；移开后自动收起，点击可展开完整详情。
 - **Codex 会话自动识别**：每两秒读取本地日志中的开始、完成和中断事件，支持从旧日志目录恢复的会话。启动时先建立日志基线，新的事件到来后更新显示；进入实时状态后，连续十五分钟没有活动的会话会从列表移除。
@@ -33,7 +33,7 @@ Atoll 以 Codex 为支持和验证对象，通过 hooks、本地会话日志及�
 - **精确返回会话**：Atoll 启动时记录 Windows Terminal 标签页和分屏，即使藏在其他标签页后或正在滚动输出，也能返回原分屏；目标失效时回退窗口或 Codex 桌面对话。IDE 暂不纳入本轮支持。
 - **设置与托盘**：支持开机启动、按代理显示或隐藏任务栏内容、修改颜色阈值。右键任务栏控件或托盘图标进入设置或退出。
 - **任务栏集成**：跟随任务栏位置、自动隐藏和通知区域大小变化；嵌入失败时使用贴近任务栏的浮动显示。重复启动 Atoll 会替换旧实例。
-- **额度读取**：Claude Code 使用其已有凭据读取额度，并尽量复用本机缓存；Codex 从本地 rollout 日志读取额度。请求受限时会退避重试。
+- **额度读取**：Claude Code 使用其已有凭据读取额度，并尽量复用本机缓存；Codex 每 30 秒在后台读取本地 rollout 日志，按额度事件时间选择最新记录，避免旧会话覆盖新额度。请求受限时会退避重试。
 
 <img src="docs/readout.png" width="96" alt="垂直任务栏中的额度控件">
 <img src="docs/card.png" width="440" alt="Claude Code 工具审批卡片">
@@ -160,7 +160,7 @@ Atoll focuses on Codex, using hooks, local session logs and an optional app-serv
 ### Features
 
 - **Taskbar quota and status**: see each agent's tightest quota window and counts of waiting, running and completed sessions. Colour thresholds are configurable; only waiting or running states animate.
-- **Activity-driven visibility**: startup restores the saved agent visibility, quota and session text without refreshing quota. A Claude hook or a new Codex log event updates the display and hides agents silent for fifteen minutes; activity brings them back. Opening details does not request quota.
+- **Activity-driven visibility**: startup restores saved agent visibility and session text; local Codex quota refreshes independently without changing visibility. A Claude hook or a new Codex log event updates the display and hides agents silent for fifteen minutes; activity brings them back. Opening details does not request quota.
 - **Details that dismiss automatically**: click the readout or tray icon to open the panel. Click the desktop, another window, or switch windows to dismiss it. Clicking the Atoll icon again also closes it.
 - **Hover preview**: dwell over the readout to see waiting sessions without taking keyboard focus. Move away to dismiss it or click to open full details.
 - **Automatic Codex session tracking**: local start, completion and interruption events are read every two seconds, including conversations resumed from older directories. Startup establishes a log baseline; new events resume live display updates. Once live, sessions leave the list after fifteen minutes without activity.
@@ -171,7 +171,7 @@ Atoll focuses on Codex, using hooks, local session logs and an optional app-serv
 - **Native question cards**: navigate multiple questions, read option descriptions, write multiline answers, mask secret input, and return to edit drafts before submitting. The first answer from Atoll or the Codex terminal wins.
 - **Settings and tray**: configure launch at login, agent visibility and colour thresholds. Right-click the readout or tray icon for Settings and Quit.
 - **Taskbar integration**: follows the taskbar's position, auto-hide and notification-area size; falls back to a floating readout beside the taskbar if embedding fails. Starting another Atoll replaces the existing instance.
-- **Quota readings**: Claude Code's existing credentials fetch quota with local cache reuse where possible; Codex quota comes from local rollout logs. Rate-limited requests back off before retrying.
+- **Quota readings**: Claude Code's existing credentials fetch quota with local cache reuse where possible; Codex quota is read in the background every 30 seconds, choosing the latest quota event across local rollout logs rather than relying on file modification times. Rate-limited requests back off before retrying.
 
 <img src="docs/readout.png" width="96" alt="Quota readout in a vertical taskbar">
 <img src="docs/card.png" width="440" alt="Claude Code tool approval card">
@@ -241,7 +241,7 @@ Environment variables:
 
 | Variable | Purpose |
 | --- | --- |
-| `CODEX_HOME` | Alternate `.codex` directory for Codex session tracking and hook installation |
+| `CODEX_HOME` | Alternate `.codex` directory for Codex session and quota tracking and hook installation |
 | `ATOLL_PIPE_NAME` | Named pipe override for an isolated development instance |
 | `ATOLL_CONFIG_DIR` | Configuration directory override |
 | `ATOLL_SKIP_HOOKS=1` | Exit the hook immediately without connecting to Atoll |

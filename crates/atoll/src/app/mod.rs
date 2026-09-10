@@ -1173,6 +1173,15 @@ impl App {
 
     fn poll_codex_sessions(&self) -> bool {
         let update = self.codex_sessions.poll(&mut self.table.borrow_mut());
+        let mut usage_changed = false;
+        if let Some(codex) = update.usage {
+            let mut usage = self.usage.borrow_mut();
+            usage_changed = usage.codex.as_ref() != Some(&codex);
+            usage.codex = Some(codex);
+            usage.refreshed_at = Some(now_unix_secs());
+            // Fresh quota is not session activity, including at startup.
+            self.display.borrow_mut().remember_usage(usage.clone());
+        }
         if update.changed {
             self.notify_completions(now_unix_secs());
         }
@@ -1183,10 +1192,10 @@ impl App {
                 self.display
                     .borrow_mut()
                     .activate(HookSource::Codex, at, now);
-                self.refresh_usage_after_activity(HookSource::Codex, now);
             }
         }
-        self.display.borrow().is_live() && (update.changed || update.new_activity)
+        usage_changed
+            || (self.display.borrow().is_live() && (update.changed || update.new_activity))
     }
 
     fn notify_completions(&self, now: u64) {
@@ -1208,16 +1217,14 @@ impl App {
         }
     }
 
-    /// Refresh only the agent that produced activity. A cached Claude quota
-    /// must not cause requests while only Codex is being used.
+    /// Claude network requests require its own activity. Codex's local logs
+    /// are polled independently by the session worker, including while idle.
     fn refresh_usage_after_activity(&self, source: HookSource, now: u64) {
         if !self.display.borrow().visible(source) {
             return;
         }
         match source {
-            HookSource::Codex => {
-                self.usage.borrow_mut().refreshed(now);
-            }
+            HookSource::Codex => {}
             HookSource::Claude => {
                 if self
                     .usage

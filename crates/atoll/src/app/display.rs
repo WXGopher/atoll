@@ -206,6 +206,14 @@ impl DisplayState {
         self.dirty = true;
     }
 
+    /// Update local quota without reviving saved sessions or changing visibility.
+    pub fn remember_usage(&mut self, usage: UsageSnapshot) {
+        if self.snapshot.usage != usage {
+            self.snapshot.usage = usage;
+            self.dirty = true;
+        }
+    }
+
     /// Coalesce rapid hooks; a clean shutdown always flushes the final state.
     pub fn save(&mut self, force: bool) {
         if !self.dirty
@@ -247,6 +255,24 @@ fn write_snapshot(path: &Path, snapshot: &Snapshot) -> io::Result<()> {
 mod tests {
     use super::*;
     use atoll_core::usage::{ClaudeLimits, UsageLimit};
+
+    #[test]
+    fn fresh_quota_does_not_revive_a_saved_session() {
+        let snapshot = previous_display();
+        let mut display = DisplayState::restore(snapshot.clone());
+        let mut usage = snapshot.usage.clone();
+        usage.codex = Some(atoll_core::usage::parse_codex_rate_limits(
+            &serde_json::json!({
+                "primary": {"used_percent": 25, "window_minutes": 10080}
+            }),
+        ));
+        display.remember_usage(usage.clone());
+        assert_eq!(display.usage(), usage);
+        assert!(!display.is_live());
+        assert_eq!(display.snapshot.sessions, snapshot.sessions);
+        assert_eq!(display.snapshot.codex, snapshot.codex);
+        assert_eq!(display.snapshot.updated_at, snapshot.updated_at);
+    }
 
     const THEN: u64 = 1_787_000_000;
     const CLAUDE: HookSource = HookSource::Claude;
