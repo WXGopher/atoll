@@ -118,6 +118,7 @@ Atoll 未启动、忙碌或响应超时时，hooks 会让代理回到原终端�
 ```powershell
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
+cargo build --workspace
 cargo test --workspace
 cargo build --workspace --release
 ```
@@ -131,7 +132,7 @@ cargo test -p atoll --test display_lifecycle -- --ignored --nocapture
 
 已安装 Atoll 且系统允许通知时，可执行 `cargo test -p atoll native_completion_reaches -- --ignored --nocapture` 验证真实通知投递；测试会移除自己发送的通知。
 
-正式发布包由 [GitHub Actions](.github/workflows/release.yml) 构建，包含 `atoll.exe`、`atoll-hook.exe`、README 和许可证。每个压缩包均提供 `SHA256SUMS.txt` 和构建来源证明，可使用 GitHub CLI 验证：
+正式发布包由 [GitHub Actions](.github/workflows/release.yml) 构建，包含 `atoll.exe`、`atoll-hook.exe`、`atoll-codex.exe`、README 和许可证。每个压缩包均提供 `SHA256SUMS.txt` 和构建来源证明，可使用 GitHub CLI 验证：
 
 ```powershell
 gh attestation verify atoll-v0.1.5-windows-x86_64.zip --repo WXGopher/atoll
@@ -255,6 +256,7 @@ With a recent stable Rust toolchain on Windows:
 ```powershell
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
+cargo build --workspace
 cargo test --workspace
 cargo build --workspace --release
 ```
@@ -268,7 +270,7 @@ cargo test -p atoll --test display_lifecycle -- --ignored --nocapture
 
 With Atoll installed and Windows notifications enabled, run `cargo test -p atoll native_completion_reaches -- --ignored --nocapture` to verify real delivery; the test removes its own notification afterwards.
 
-Release archives are built by [GitHub Actions](.github/workflows/release.yml) and contain `atoll.exe`, `atoll-hook.exe`, the README and license. Each archive has a `SHA256SUMS.txt` checksum alongside it and a build provenance attestation. Verify the attestation with the GitHub CLI:
+Release archives are built by [GitHub Actions](.github/workflows/release.yml) and contain `atoll.exe`, `atoll-hook.exe`, `atoll-codex.exe`, the README and license. Each archive has a `SHA256SUMS.txt` checksum alongside it and a build provenance attestation. Verify the attestation with the GitHub CLI:
 
 ```powershell
 gh attestation verify atoll-v0.1.5-windows-x86_64.zip --repo WXGopher/atoll

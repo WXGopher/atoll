@@ -18,6 +18,9 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Build hook for end-to-end tests
+        run: cargo build -p atoll-hook --locked
+
       - name: Test
         run: cargo test --workspace --locked -- --test-threads=1
 
