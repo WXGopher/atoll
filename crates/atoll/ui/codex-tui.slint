@@ -1,0 +1,172 @@
+import { Button, CheckBox, ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+export struct StatusComponent {
+    id: string,
+    label: string,
+    description: string,
+    selected: bool,
+}
+
+component ComponentOption inherits Rectangle {
+    in property <StatusComponent> item;
+    in property <bool> available;
+    callback toggle(string, bool);
+    min-height: 52px;
+    HorizontalLayout {
+        padding-left: 2px;
+        padding-right: 12px;
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            CheckBox {
+                text: root.item.label;
+                checked: root.item.selected;
+                enabled: root.available;
+                toggled => { root.toggle(root.item.id, self.checked); }
+            }
+            Text {
+                text: root.item.description;
+                font-size: 11px;
+                wrap: word-wrap;
+                color: #808080;
+            }
+        }
+    }
+}
+
+export component CodexTuiWindow inherits Window {
+    title: "Atoll · Codex TUI";
+    preferred-width: 740px;
+    preferred-height: 720px;
+    min-width: 620px;
+    min-height: 620px;
+    in property <[StatusComponent]> left-components;
+    in property <[StatusComponent]> right-components;
+    in property <string> preview;
+    in property <int> selected-count;
+    in property <bool> ready;
+    in property <bool> dirty;
+    in property <bool> custom;
+    in property <string> message;
+    in property <bool> error;
+    in property <string> config-path;
+    in property <string> catalog-version;
+    callback toggle(string, bool);
+    callback apply();
+    callback restore-defaults();
+
+    VerticalBox {
+        padding: 20px;
+        spacing: 12px;
+        VerticalLayout {
+            spacing: 4px;
+            Text { text: "Make the status bar yours"; font-size: 22px; font-weight: 600; }
+            Text { text: "Choose what stays at the bottom of Codex CLI."; font-size: 12px; }
+        }
+
+        Rectangle {
+            height: 174px;
+            background: #14171b;
+            border-radius: 6px;
+            VerticalLayout {
+                padding: 16px;
+                spacing: 8px;
+                HorizontalLayout {
+                    Text { text: "›_ Codex CLI"; color: #cdd3db; font-family: "Consolas"; font-size: 12px; }
+                    Text { text: "Preview · sample values"; color: #98a3af; font-size: 11px; horizontal-alignment: right; }
+                }
+                Text { text: "• Ready to work on atoll."; color: #98a3af; font-family: "Consolas"; font-size: 12px; }
+                Rectangle { height: 1px; background: #3e444d; }
+                Text { text: "› Ask Codex to do anything"; color: #ebeff5; font-family: "Consolas"; font-size: 12px; }
+                Rectangle {
+                    background: #222831;
+                    border-radius: 3px;
+                    min-height: 40px;
+                    ScrollView {
+                        viewport-width: self.width;
+                        VerticalLayout {
+                            padding: 8px;
+                            Text {
+                                text: !root.ready ? "Preview unavailable" : root.selected-count == 0 ? "Status bar hidden" : root.preview;
+                                color: #a8c6e6;
+                                font-family: "Consolas";
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            Text { text: "Visible components"; font-weight: 600; }
+            Text {
+                text: root.ready ? root.selected-count + " selected · check to show" : "";
+                font-size: 11px;
+                horizontal-alignment: right;
+            }
+        }
+        ScrollView {
+            vertical-stretch: 1;
+            viewport-width: self.width;
+            HorizontalLayout {
+                spacing: 14px;
+                VerticalLayout {
+                    alignment: start;
+                    for item in root.left-components: ComponentOption {
+                        item: item;
+                        available: root.ready;
+                        toggle(id, enabled) => { root.toggle(id, enabled); }
+                    }
+                }
+                VerticalLayout {
+                    alignment: start;
+                    for item in root.right-components: ComponentOption {
+                        item: item;
+                        available: root.ready;
+                        toggle(id, enabled) => { root.toggle(id, enabled); }
+                    }
+                }
+            }
+        }
+        Text {
+            text: "Components appear in Codex when data is available. Preview wraps to show your full selection.";
+            font-size: 11px;
+            wrap: word-wrap;
+        }
+        Rectangle { height: 1px; background: #80808040; }
+        HorizontalBox {
+            padding: 0px;
+            Button {
+                text: "Restore Codex defaults";
+                enabled: root.ready && (root.custom || root.dirty);
+                clicked => { root.restore-defaults(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Text {
+                text: root.dirty ? "Unapplied changes" : root.ready ? (root.custom ? "Custom status bar" : "Codex defaults") : "";
+                vertical-alignment: center;
+                font-size: 11px;
+            }
+            Button {
+                text: "Apply";
+                primary: true;
+                enabled: root.ready && root.dirty;
+                clicked => { root.apply(); }
+            }
+        }
+        Text {
+            text: root.message;
+            color: root.error ? #c42b1c : #808080;
+            font-size: 12px;
+            wrap: word-wrap;
+            min-height: 34px;
+        }
+        Text {
+            text: "User configuration · " + root.config-path + "\nComponent catalog: Codex CLI " + root.catalog-version;
+            font-size: 11px;
+            wrap: word-wrap;
+        }
+    }
+}

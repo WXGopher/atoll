@@ -74,6 +74,8 @@ use serde_json::{Map, Value};
 #[cfg(feature = "server")]
 mod codex;
 #[cfg(feature = "server")]
+pub mod codex_tui;
+#[cfg(feature = "server")]
 pub use codex::{
     CODEX_HOOKS, CodexReport, codex_home, install_codex, status_codex, uninstall_codex,
 };

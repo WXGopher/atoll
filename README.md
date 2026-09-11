@@ -32,13 +32,14 @@ Atoll 以 Codex 为支持和验证对象，通过 hooks、本地会话日志及�
 - **原生提问卡片**：通过 Atoll 启动的 Codex CLI 会话支持多题切换、完整选项说明、多行自由文本、密码遮罩和返回修改草稿。卡片与终端先答者生效，重复回复会被丢弃。
 - **精确返回会话**：Atoll 启动时记录 Windows Terminal 标签页和分屏，即使藏在其他标签页后或正在滚动输出，也能返回原分屏；目标失效时回退原终端窗口。CLI 终端已关闭或无法定位时保留详情面板，不改为打开桌面 App。普通 CLI 的标签页和分屏定位仍依赖标题或可见文本。IDE 暂不纳入本轮支持。
 - **设置与托盘**：支持开机启动、按代理显示或隐藏任务栏内容、修改颜色阈值。右键任务栏控件或托盘图标进入设置或退出。
+- **Codex CLI 状态栏定制**：设置 → Codex TUI → Customize status bar，勾选组件实时预览，Apply 保存，Restore Codex defaults 恢复默认；支持全部隐藏。
 - **任务栏集成**：跟随任务栏位置、自动隐藏和通知区域大小变化；嵌入失败时使用贴近任务栏的浮动显示。重复启动 Atoll 会替换旧实例。
 - **额度读取**：Claude Code 使用其已有凭据读取额度，并尽量复用本机缓存；Codex 每 30 秒在后台读取本地 rollout 日志，按额度事件时间选择最新记录，避免旧会话覆盖新额度。请求受限时会退避重试。
 
 <img src="docs/readout.png" width="96" alt="垂直任务栏中的额度控件">
 <img src="docs/card.png" width="440" alt="Claude Code 工具审批卡片">
 
-当前源码版本为 v0.1.5。项目仍在早期开发，部分截图来自较早版本，具体外观以当前程序为准。Codex CLI 提问接入与桌面分页历史读取为实验性功能，桌面原生问题仍在 Codex 中作答。
+当前源码版本为 v0.1.6。项目仍在早期开发，部分截图来自较早版本，具体外观以当前程序为准。Codex CLI 提问接入与桌面分页历史读取为实验性功能，桌面原生问题仍在 Codex 中作答。
 
 ### 安装与使用
 
@@ -84,6 +85,16 @@ Atoll 以 Codex 为支持和验证对象，通过 hooks、本地会话日志及�
 ```
 
 `atoll.exe headless` 可在终端输出收到的 hook 事件，用于排查集成问题。它只监视 hook 事件流，不显示窗口。
+
+### 定制 Codex CLI 状态栏
+
+<img src="docs/codex-tui.png" width="620" alt="Codex CLI 状态栏编辑器：实时预览、组件开关、Apply 和恢复默认">
+
+在设置的 **Codex TUI** 页打开编辑器。勾选表示显示，取消勾选表示隐藏；预览使用示例数据，不会发起模型请求。组件与默认预览按本机 Codex CLI **0.154.0** 的 `/statusline` 核对，包含模型、推理强度、目录、Git、上下文、额度、token 和会话信息。实际终端会省略无数据的组件，并按终端宽度显示。
+
+点击 **Apply** 写入 `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`）的 `tui.status_line`。全部取消后保存空列表以隐藏状态栏。现有组件顺序保持不变，新增组件排在后面；同一次编辑中取消再勾选会恢复原位置。重启 Codex CLI 后加载配置，可用 `codex resume` 继续已有会话。项目、profile 和命令行覆盖配置可能优先于此用户配置。
+
+**Restore Codex defaults** 会立即移除用户配置中的 `tui.status_line`，由 Codex 自己决定默认展示，不会写入固定的默认列表。打开编辑器和勾选不写文件；保存及恢复前备份，保留其他配置和注释，状态栏在外部被修改时提示关闭并重新打开编辑器。恢复操作仅针对状态栏组件，主题和其他 TUI 设置保持原样。配置格式见 [OpenAI Docs 配置示例](https://learn.chatgpt.com/docs/config-file/config-sample)。
 
 ### 配置与本地数据
 
@@ -135,7 +146,7 @@ cargo test -p atoll --test display_lifecycle -- --ignored --nocapture
 正式发布包由 [GitHub Actions](.github/workflows/release.yml) 构建，包含 `atoll.exe`、`atoll-hook.exe`、`atoll-codex.exe`、README 和许可证。每个压缩包均提供 `SHA256SUMS.txt` 和构建来源证明，可使用 GitHub CLI 验证：
 
 ```powershell
-gh attestation verify atoll-v0.1.5-windows-x86_64.zip --repo WXGopher/atoll
+gh attestation verify atoll-v0.1.6-windows-x86_64.zip --repo WXGopher/atoll
 ```
 
 F01–F03 的交付范围与后续更新、远端会话候选项，见对照 open-vibe-island 整理的 [功能路线图](docs/ROADMAP.md)。更多代理、通知偏好和界面语言切换本轮不做。维护事项单列在 [已知问题](docs/KNOWN_ISSUES.md)。
@@ -171,13 +182,14 @@ Atoll focuses on Codex, using hooks, local session logs and an optional app-serv
 - **Exact session navigation**: sessions launched through Atoll remember their Windows Terminal tab and pane, including hidden tabs and changing output. Invalid targets fall back to their original terminal window. Missing or closed CLI terminals leave the panel open without launching the desktop app. Plain CLI tab and pane selection still relies on titles or visible text. IDE navigation is outside this release scope.
 - **Native question cards**: navigate multiple questions, read option descriptions, write multiline answers, mask secret input, and return to edit drafts before submitting. The first answer from Atoll or the Codex terminal wins.
 - **Settings and tray**: configure launch at login, agent visibility and colour thresholds. Right-click the readout or tray icon for Settings and Quit.
+- **Codex CLI status bar**: open Settings → Codex TUI → Customize status bar, toggle components in a live preview, then Apply or Restore Codex defaults. All components can be hidden.
 - **Taskbar integration**: follows the taskbar's position, auto-hide and notification-area size; falls back to a floating readout beside the taskbar if embedding fails. Starting another Atoll replaces the existing instance.
 - **Quota readings**: Claude Code's existing credentials fetch quota with local cache reuse where possible; Codex quota is read in the background every 30 seconds, choosing the latest quota event across local rollout logs rather than relying on file modification times. Rate-limited requests back off before retrying.
 
 <img src="docs/readout.png" width="96" alt="Quota readout in a vertical taskbar">
 <img src="docs/card.png" width="440" alt="Claude Code tool approval card">
 
-The current source version is v0.1.5. The project is in early development and some screenshots show earlier versions. Codex CLI question integration and desktop paginated-history reads are experimental; desktop questions still require answering in Codex.
+The current source version is v0.1.6. The project is in early development and some screenshots show earlier versions. Codex CLI question integration and desktop paginated-history reads are experimental; desktop questions still require answering in Codex.
 
 ### Install and use
 
@@ -222,6 +234,14 @@ Check or remove hooks for either agent:
 ```
 
 `atoll.exe headless` prints incoming hook events to the terminal for troubleshooting. It watches the hook stream without displaying windows.
+
+### Customize the Codex CLI status bar
+
+Open **Settings → Codex TUI → Customize status bar**. Checked components appear in the preview; unchecked components are hidden. The catalog and default preview were checked against `/statusline` in Codex CLI **0.154.0**. Values are illustrative; Codex omits unavailable data and fits the footer to its terminal width.
+
+**Apply** saves `tui.status_line` in `$CODEX_HOME/config.toml` (normally `~/.codex/config.toml`). An empty selection hides the footer. Existing component order is preserved, new components follow it, and toggling off/on within a draft restores the original position. Restart Codex CLI to load the saved configuration; use `codex resume` to continue an existing session. Project, profile and command-line overrides may take precedence.
+
+**Restore Codex defaults** immediately removes the user status-line override so Codex supplies its own defaults, including future changes. Opening and toggling do not write files. Saves and resets back up existing configuration, preserve unrelated settings and comments, and refuse to overwrite a footer changed outside the editor. Reset affects footer components only; themes and other TUI settings remain intact. See the [OpenAI Docs configuration sample](https://learn.chatgpt.com/docs/config-file/config-sample).
 
 ### Configuration and local data
 
@@ -273,7 +293,7 @@ With Atoll installed and Windows notifications enabled, run `cargo test -p atoll
 Release archives are built by [GitHub Actions](.github/workflows/release.yml) and contain `atoll.exe`, `atoll-hook.exe`, `atoll-codex.exe`, the README and license. Each archive has a `SHA256SUMS.txt` checksum alongside it and a build provenance attestation. Verify the attestation with the GitHub CLI:
 
 ```powershell
-gh attestation verify atoll-v0.1.5-windows-x86_64.zip --repo WXGopher/atoll
+gh attestation verify atoll-v0.1.6-windows-x86_64.zip --repo WXGopher/atoll
 ```
 
 See the [feature roadmap](docs/ROADMAP.md) for gaps compared with open-vibe-island, including the delivered F01–F03 scope and candidate update/remote-session features; more agents, notification preferences and language switching are not planned. Maintenance work is tracked separately in [known issues](docs/KNOWN_ISSUES.md).

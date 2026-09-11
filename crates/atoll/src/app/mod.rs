@@ -28,6 +28,7 @@
 mod bridge;
 mod card;
 mod cardview;
+mod codex_tui;
 pub(crate) mod config;
 mod display;
 mod flyout;
@@ -168,6 +169,7 @@ struct App {
     /// visible blink a moment after it appears.
     flyout_handle: Cell<Option<isize>>,
     settings_window: RefCell<Option<ui::SettingsWindow>>,
+    codex_tui_editor: RefCell<Option<Rc<codex_tui::Editor>>>,
     tray: RefCell<Option<Tray>>,
 
     table: RefCell<SessionTable>,
@@ -237,6 +239,7 @@ impl App {
             flyout_dismissal: RefCell::new(None),
             flyout_handle: Cell::new(None),
             settings_window: RefCell::new(None),
+            codex_tui_editor: RefCell::new(None),
             tray: RefCell::new(None),
             table: RefCell::new(SessionTable::new()),
             jump_request: Cell::new(0),
@@ -1665,6 +1668,13 @@ impl App {
         window.set_taskbar_enabled(self.bar.is_shown());
 
         let app = Rc::downgrade(self);
+        window.on_customize_codex_tui(move || {
+            if let Some(app) = app.upgrade() {
+                app.open_codex_tui();
+            }
+        });
+
+        let app = Rc::downgrade(self);
         window.on_install(move || {
             if let Some(app) = app.upgrade() {
                 app.run_install(true);
@@ -1735,6 +1745,40 @@ impl App {
         *self.settings_window.borrow_mut() = Some(window);
         self.heal_readout();
         self.refresh_settings();
+    }
+
+    /// Open the native status-bar editor without changing the Codex config.
+    fn open_codex_tui(self: &Rc<Self>) {
+        if self.codex_tui_editor.borrow().is_none() {
+            let editor = atoll_core::install::codex_home()
+                .map_err(|error| error.to_string())
+                .and_then(|home| {
+                    codex_tui::Editor::new(home.join("config.toml"))
+                        .map_err(|error| error.to_string())
+                });
+            match editor {
+                Ok(editor) => {
+                    let app = Rc::downgrade(self);
+                    editor.window.window().on_close_requested(move || {
+                        if let Some(app) = app.upgrade() {
+                            app.heal_readout();
+                        }
+                        slint::CloseRequestResponse::HideWindow
+                    });
+                    *self.codex_tui_editor.borrow_mut() = Some(editor);
+                }
+                Err(error) => {
+                    self.note_settings(&format!("Could not open the Codex TUI editor: {error}"));
+                    return;
+                }
+            }
+        }
+        if let Some(editor) = self.codex_tui_editor.borrow().as_ref()
+            && let Err(error) = editor.show()
+        {
+            self.note_settings(&format!("Could not show the Codex TUI editor: {error}"));
+        }
+        self.heal_readout();
     }
 
     /// Put one line under the settings window's buttons.

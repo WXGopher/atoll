@@ -21,6 +21,7 @@ export component SettingsWindow inherits Window {
     in property <string> codex-status: "checking…";
     callback install-codex();
     callback uninstall-codex();
+    callback customize-codex-tui();
 
     in property <bool> completion-notifications: true;
     callback set-completion-notifications(bool);
@@ -54,6 +55,28 @@ export component SettingsWindow inherits Window {
 
     VerticalBox {
         TabWidget {
+            Tab {
+                title: "Codex TUI";
+                VerticalBox {
+                    alignment: start;
+                    spacing: 14px;
+                    Text { text: "Your Codex CLI status bar"; font-size: 16px; font-weight: 600; }
+                    Text {
+                        text: "Preview the bottom status bar, choose the components you want to see, then apply your selection to Codex CLI.";
+                        wrap: word-wrap;
+                    }
+                    Button {
+                        text: "Customize status bar…";
+                        primary: true;
+                        clicked => { root.customize-codex-tui(); }
+                    }
+                    Text {
+                        text: "Restore Codex defaults at any time from the editor. Restart Codex CLI to load saved changes; use codex resume to continue a session.";
+                        font-size: 11px;
+                        wrap: word-wrap;
+                    }
+                }
+            }
             Tab {
                 title: "Setup";
                 VerticalBox {

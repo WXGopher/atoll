@@ -359,7 +359,9 @@ fn json_bytes(value: &impl Serialize) -> io::Result<Vec<u8>> {
 
 /// Prepare every backup before changing any user file. On failure restore all
 /// earlier writes, so a half-installed hook never loses its rollback record.
-fn commit_files(writes: Vec<(PathBuf, Option<Vec<u8>>)>) -> io::Result<(bool, Vec<PathBuf>)> {
+pub(super) fn commit_files(
+    writes: Vec<(PathBuf, Option<Vec<u8>>)>,
+) -> io::Result<(bool, Vec<PathBuf>)> {
     let mut changes = Vec::new();
     let mut backups = Vec::new();
     for (path, bytes) in writes {

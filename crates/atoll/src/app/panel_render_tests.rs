@@ -170,4 +170,123 @@ fn waiting_preview_renders_and_opens_full_details_at_common_scales() {
     card.set_form_text("hidden secret text".into());
     draw(&window, "codex-secret-question");
     card.hide().unwrap();
+    codex_tui_editor_renders_and_applies_only_explicit_actions(&windows);
+}
+
+fn codex_tui_editor_renders_and_applies_only_explicit_actions(
+    windows: &Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>,
+) {
+    use atoll_core::install::codex_tui as config;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let original = "# keep my config\n[features]\nhooks = true\n[tui]\ntheme = \"nord\"\n";
+    std::fs::write(&path, original).unwrap();
+    let editor = super::codex_tui::Editor::new(path.clone()).unwrap();
+    editor.show().unwrap();
+    // The displayed path is illustrative in the screenshots; all writes still
+    // go to the explicit temporary path held by the controller.
+    editor.window.set_config_path("~/.codex/config.toml".into());
+    let window = windows.borrow().last().unwrap().clone();
+    assert_eq!(editor.window.get_selected_count(), 3);
+    assert!(!editor.window.get_dirty());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    for scale in [1.0, 1.5, 2.0] {
+        window.dispatch_event(WindowEvent::ScaleFactorChanged {
+            scale_factor: scale,
+        });
+        for (width, height) in [(740.0, 720.0), (620.0, 620.0)] {
+            editor
+                .window
+                .window()
+                .set_size(slint::LogicalSize::new(width, height));
+            draw(&window, &format!("codex-tui-default-{width}-{scale}"));
+            if width == 740.0 && scale == 1.0 {
+                window.dispatch_event(WindowEvent::WindowActiveChanged(true));
+                window.dispatch_event(WindowEvent::KeyPressed {
+                    text: slint::platform::Key::Tab.into(),
+                });
+                window.dispatch_event(WindowEvent::KeyReleased {
+                    text: slint::platform::Key::Tab.into(),
+                });
+            }
+            click(&window, 31.0, 307.0);
+            assert_eq!(
+                editor.window.get_selected_count(),
+                2,
+                "checkbox at {width}px / {scale}x"
+            );
+            assert!(editor.window.get_dirty());
+            window.dispatch_event(WindowEvent::KeyPressed { text: " ".into() });
+            window.dispatch_event(WindowEvent::KeyReleased { text: " ".into() });
+            assert_eq!(
+                editor.window.get_selected_count(),
+                3,
+                "checkbox retains keyboard focus after toggling"
+            );
+            assert!(!editor.window.get_dirty());
+        }
+    }
+    window.dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: 1.0 });
+    editor
+        .window
+        .window()
+        .set_size(slint::LogicalSize::new(740.0, 720.0));
+    editor
+        .window
+        .invoke_toggle("model-with-reasoning".into(), false);
+    assert!(editor.window.get_dirty());
+    assert!(!editor.window.get_preview().contains("gpt-6-astra"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    editor.window.invoke_toggle("git-branch".into(), true);
+    draw(&window, "codex-tui-draft");
+    click(&window, 690.0, 600.0);
+    assert!(
+        !editor.window.get_error(),
+        "{}",
+        editor.window.get_message()
+    );
+    assert!(!editor.window.get_dirty());
+    assert_eq!(
+        config::read(&path).unwrap().visible_items(),
+        vec!["current-dir", "thread-name", "git-branch"]
+    );
+    for component in config::COMPONENTS {
+        editor.window.invoke_toggle(component.id.into(), false);
+    }
+    assert_eq!(editor.window.get_selected_count(), 0);
+    draw(&window, "codex-tui-hidden");
+    editor.window.invoke_apply();
+    assert_eq!(config::read(&path).unwrap().items, Some(vec![]));
+    click(&window, 100.0, 600.0);
+    assert_eq!(config::read(&path).unwrap().items, None);
+    assert!(!editor.window.get_custom());
+    assert_eq!(editor.window.get_selected_count(), 3);
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("theme = \"nord\"")
+    );
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("hooks = true")
+    );
+    for component in config::COMPONENTS {
+        editor.window.invoke_toggle(component.id.into(), true);
+    }
+    draw(&window, "codex-tui-all");
+    let external = "[tui]\nstatus_line = [\"future-component\", \"model\"]\n";
+    std::fs::write(&path, external).unwrap();
+    editor.window.invoke_apply();
+    assert!(editor.window.get_error());
+    assert!(editor.window.get_dirty());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), external);
+    draw(&window, "codex-tui-conflict");
+    editor.window.hide().unwrap();
+    editor.show().unwrap();
+    assert!(!editor.window.get_error());
+    assert_eq!(editor.window.get_selected_count(), 2);
+    assert!(editor.window.get_preview().contains("[future-component]"));
+    editor.window.hide().unwrap();
 }
